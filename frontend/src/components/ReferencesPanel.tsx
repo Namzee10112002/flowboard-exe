@@ -125,7 +125,23 @@ function ReferenceCard({
   const [thumbBroken, setThumbBroken] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(item.label);
+  // Inline 2-step delete confirm: first click arms the button (label →
+  // "Confirm?", colour shifts to red), second click within 3s commits
+  // the DELETE. Anywhere else (timeout, blur, panel scroll) → revert.
+  // Replaces the native window.confirm() which was modal + ugly.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // Auto-revert the confirm-armed state after 3s of no second click.
+    return () => {
+      if (confirmTimerRef.current !== null) {
+        clearTimeout(confirmTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (renaming) {
@@ -179,16 +195,38 @@ function ReferenceCard({
     }
   }
 
+  function armDeleteConfirm() {
+    setConfirmDelete(true);
+    if (confirmTimerRef.current !== null) {
+      clearTimeout(confirmTimerRef.current);
+    }
+    confirmTimerRef.current = setTimeout(() => {
+      setConfirmDelete(false);
+      confirmTimerRef.current = null;
+    }, 3000);
+  }
+
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    const ok = window.confirm(
-      `Delete reference "${item.label}"? The underlying image stays in storage.`,
-    );
-    if (!ok) return;
+    // First click: arm the confirm (visual red + label change). Second
+    // click within 3s commits. Timeout → revert.
+    if (!confirmDelete) {
+      armDeleteConfirm();
+      return;
+    }
+    if (confirmTimerRef.current !== null) {
+      clearTimeout(confirmTimerRef.current);
+      confirmTimerRef.current = null;
+    }
+    setDeleting(true);
     try {
       await onDelete();
+      // The card unmounts on success — no need to flip state back.
     } catch {
-      // Swallow — surfaced via store.error.
+      // Swallow — surfaced via store.error. Revert UI so the user can
+      // retry or move on.
+      setDeleting(false);
+      setConfirmDelete(false);
     }
   }
 
@@ -281,12 +319,24 @@ function ReferenceCard({
         </button>
         <button
           type="button"
-          className="reference-card__action-btn reference-card__action-btn--danger"
+          className={
+            "reference-card__action-btn reference-card__action-btn--danger"
+            + (confirmDelete ? " reference-card__action-btn--armed" : "")
+          }
           onClick={handleDelete}
-          aria-label="Delete reference"
-          title="Delete"
+          disabled={deleting}
+          aria-label={
+            confirmDelete
+              ? "Confirm delete reference"
+              : "Delete reference"
+          }
+          title={
+            confirmDelete
+              ? "Click again to confirm — auto-cancels in 3s"
+              : "Delete (underlying image stays in storage)"
+          }
         >
-          🗑
+          {deleting ? "…" : confirmDelete ? "Confirm?" : "🗑"}
         </button>
       </div>
     </li>
