@@ -13,12 +13,10 @@ def _reset_state():
     """Each test gets a clean cached identity — flow_client is a module
     singleton that bleeds state across tests otherwise. Also flush the
     DB-tier TTL cache so tier-fallback tests don't see stale answers."""
-    flow_client._user_info = None
-    flow_client._paygate_tier = None
+    flow_client.clear_extension()
     _reset_db_tier_cache_for_tests()
     yield
-    flow_client._user_info = None
-    flow_client._paygate_tier = None
+    flow_client.clear_extension()
     _reset_db_tier_cache_for_tests()
 
 
@@ -291,6 +289,7 @@ def test_logout_notifies_extension_when_ws_connected(client):
     assert sent == [{"type": "logout"}]
     # Cleared agent-side too.
     assert flow_client.user_info is None
+    assert flow_client.connected is True
 
 
 def test_scan_reports_disconnected_state_when_no_extension(client):
@@ -303,6 +302,7 @@ def test_scan_reports_disconnected_state_when_no_extension(client):
     assert r.json() == {
         "extension_connected": False,
         "has_user_info": False,
+        "has_flow_token": False,
         "has_paygate_tier": False,
         "userinfo_nudged": False,
         "tier_fetched": False,
@@ -322,6 +322,7 @@ def test_scan_nudges_extension_when_connected_but_userinfo_empty(client):
 
     flow_client.set_extension(_FakeWs())
     flow_client._user_info = None
+    flow_client._flow_key = None
     flow_client._paygate_tier = None
 
     r = client.post("/api/auth/scan")
@@ -329,8 +330,9 @@ def test_scan_nudges_extension_when_connected_but_userinfo_empty(client):
     body = r.json()
     assert body["extension_connected"] is True
     assert body["has_user_info"] is False
+    assert body["has_flow_token"] is False
     assert body["userinfo_nudged"] is True
-    assert sent == [{"type": "please_resend_userinfo"}]
+    assert sent == [{"type": "please_resend_userinfo"}, {"type": "refresh_token"}]
 
 
 def test_scan_does_not_nudge_when_userinfo_already_cached(client):

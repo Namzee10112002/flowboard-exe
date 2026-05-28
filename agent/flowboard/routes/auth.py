@@ -7,7 +7,7 @@ exposes the cached object for the frontend's AccountPanel.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from flowboard.services.flow_client import flow_client
 
@@ -25,7 +25,7 @@ def _reset_db_tier_cache_for_tests() -> None:
 
 
 @router.get("/me")
-def get_me() -> dict:
+def get_me(account_id: int | None = Query(default=None)) -> dict:
     """Return the cached Google profile + paygate tier from the live
     extension signal only.
 
@@ -44,13 +44,19 @@ def get_me() -> dict:
     the extension pushes a real signal, and the AccountPanel renders a
     "Tier unknown — open Flow tab" banner instead of lying.
     """
-    info = flow_client.user_info or {}
+    if account_id is not None and account_id <= 0:
+        raise HTTPException(400, "account_id must be positive")
+    ctx = flow_client.get_account_context(account_id) if account_id is not None else {}
+    info = ctx.get("user_info") if isinstance(ctx.get("user_info"), dict) else (flow_client.user_info or {})
+    paygate_tier = ctx.get("paygate_tier") if account_id is not None else flow_client.paygate_tier
+    sku = ctx.get("sku") if account_id is not None else flow_client.sku
+    credits = ctx.get("credits") if account_id is not None else flow_client.credits
     return {
         "email": info.get("email"),
         "name": info.get("name"),
         "picture": info.get("picture"),
         "verified_email": info.get("verified_email"),
-        "paygate_tier": flow_client.paygate_tier,
+        "paygate_tier": paygate_tier,
         # Resolved by `flow_client.fetch_paygate_tier()` against
         # /v1/credits — same fetch that gives us the authoritative
         # tier. Both null until the token-captured trigger fires.
@@ -74,7 +80,7 @@ async def logout() -> dict:
     and we want to be ready to push the new identity.
     """
     extension_notified = await flow_client.notify({"type": "logout"})
-    flow_client.clear_extension()
+    flow_client.clear_identity()
     return {
         "ok": True,
         "extension_notified": extension_notified,
@@ -109,6 +115,8 @@ async def scan_extension() -> dict:
     nudged = False
     if flow_client.connected and flow_client.user_info is None:
         nudged = await flow_client.notify({"type": "please_resend_userinfo"})
+        if not flow_client.has_current_flow_token():
+            await flow_client.notify({"type": "refresh_token"})
     # If tier is still null but we have a token, do an authoritative
     # /v1/credits fetch right now. Synchronous (not fire-and-forget)
     # so the response reflects the post-fetch state — UI gets a single
@@ -119,7 +127,17 @@ async def scan_extension() -> dict:
     return {
         "extension_connected": flow_client.connected,
         "has_user_info": flow_client.user_info is not None,
+        "has_flow_token": flow_client.has_current_flow_token(),
         "has_paygate_tier": flow_client.paygate_tier is not None,
         "userinfo_nudged": nudged,
         "tier_fetched": tier_fetched,
+    }
+
+@router.get("/extension-status")
+async def extension_status() -> dict:
+    status = await flow_client.extension_status(timeout=5.0)
+    return {
+        "extension_connected": flow_client.connected,
+        "agent": flow_client.ws_stats,
+        "extension": status,
     }

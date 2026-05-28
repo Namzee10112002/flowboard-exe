@@ -43,7 +43,7 @@ async def _handler(websocket) -> None:
     except websockets.ConnectionClosed:
         pass
     finally:
-        flow_client.clear_extension()
+        flow_client.clear_extension(websocket)
         logger.info("extension disconnected")
 
 

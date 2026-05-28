@@ -25,6 +25,11 @@ from pydantic import BaseModel
 
 from flowboard.services.llm import registry, secrets
 from flowboard.services.llm.base import LLMError
+from flowboard.services.llm.codex_bootstrap import (
+    CodexBootstrapError,
+    bootstrap_codex_cli,
+    codex_bootstrap_status,
+)
 from flowboard.services import claude_cli
 
 logger = logging.getLogger(__name__)
@@ -103,6 +108,21 @@ async def list_providers() -> list[dict]:
             "mode": mode,
         })
     return out
+
+@router.get("/providers/openai/codex-bootstrap")
+def get_codex_bootstrap_status() -> dict:
+    return codex_bootstrap_status()
+
+@router.post("/providers/openai/codex-bootstrap")
+def install_codex_bootstrap() -> dict:
+    try:
+        result = bootstrap_codex_cli()
+    except CodexBootstrapError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    provider = registry.get_provider("openai")
+    if provider is not None and hasattr(provider, "reset_cache"):
+        provider.reset_cache()
+    return result
 
 
 # ── PUT /api/llm/providers/{name} ─────────────────────────────────────

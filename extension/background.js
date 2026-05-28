@@ -5,7 +5,7 @@
  * Captures Bearer token and proxies API calls through the browser context.
  */
 
-const AGENT_WS_URL  = 'ws://127.0.0.1:9223';
+const AGENT_WS_URL  = 'ws://127.0.0.1:9323';
 const CALLBACK_URL  = 'http://127.0.0.1:8101/api/ext/callback';
 
 let ws               = null;
@@ -19,6 +19,10 @@ let metrics = {
   successCount:    0,
   failedCount:     0,
   lastError:       null,
+  lastAuthSeenAt:  null,
+  lastAuthKind:    null,
+  lastAuthUrlType: null,
+  lastCaptureSkip: null,
 };
 
 const flowUrls = ['https://labs.google/fx/tools/flow*', 'https://labs.google/fx/*/tools/flow*'];
@@ -29,7 +33,33 @@ function classifyUrl(url) {
   if (url.includes('batchGenerateImages'))     return 'GEN_IMG';
   if (url.includes('batchAsyncGenerateVideo')) return 'GEN_VID';
   if (url.includes('batchCheckAsync'))         return 'POLL';
+  if (url.includes('/v1/credits'))             return 'CREDITS';
   return 'API';
+}
+
+function classifyAuth(value) {
+  if (/^Bearer\s+/i.test(value || '')) return 'Bearer';
+  if (/^SAPISIDHASH\s+/i.test(value || '')) return 'SAPISIDHASH';
+  if (value) return 'Other';
+  return null;
+}
+
+function captureBearerToken(token, source = 'webRequest') {
+  if (!token) return;
+
+  const tokenChanged = flowKey !== token;
+  flowKey = token;
+  metrics.tokenCapturedAt = Date.now();
+  metrics.lastCaptureSkip = null;
+  chrome.storage.local.set({ flowKey, metrics });
+
+  if (tokenChanged) {
+    console.log(`[Flowboard] Bearer token captured via ${source}`);
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'token_captured', flowKey }));
+    }
+    fetchAndPushUserInfo(token);
+  }
 }
 
 // ─── Request Log (last 50 entries) ─────────────────────────
@@ -54,6 +84,8 @@ function broadcastRequestLog() {
 
 // ─── Startup ────────────────────────────────────────────────
 
+let initStarted = false;
+
 chrome.runtime.onInstalled.addListener(init);
 chrome.runtime.onStartup.addListener(init);
 
@@ -63,6 +95,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function init() {
+  if (initStarted) return;
+  initStarted = true;
   // Note: deliberately not restoring `userInfo` from storage. We used
   // to persist it here, but Google profile fields (name + email) are
   // PII and chrome.storage.local is plaintext + readable by other
@@ -86,35 +120,24 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
       (h) => h.name?.toLowerCase() === 'authorization',
     );
     const value = authHeader?.value || '';
-    if (!value.startsWith('Bearer ya29.')) return;
+    if (value) {
+      metrics.lastAuthSeenAt = Date.now();
+      metrics.lastAuthKind = classifyAuth(value);
+      metrics.lastAuthUrlType = classifyUrl(details.url || '');
+      metrics.lastCaptureSkip = null;
+      chrome.storage.local.set({ metrics });
+    }
+    if (!/^Bearer\s+/i.test(value)) {
+      if (value) {
+        metrics.lastCaptureSkip = 'AUTH_NOT_BEARER';
+        chrome.storage.local.set({ metrics });
+      }
+      return;
+    }
 
     const token = value.replace(/^Bearer\s+/i, '').trim();
     if (!token) return;
-
-    // Always update — even if same token string, refresh the timestamp
-    const tokenChanged = flowKey !== token;
-    flowKey = token;
-    metrics.tokenCapturedAt = Date.now();
-    chrome.storage.local.set({ flowKey, metrics });
-
-    // Only emit on the WS when the token actually rotated. The listener
-    // fires on EVERY outbound aisandbox-pa request — and the agent's
-    // own poll loops generate dozens per minute. Re-sending the same
-    // string each time pushed the agent into an effective infinite
-    // /v1/credits refresh loop (one credits GET per poll). The agent
-    // side has a defensive dedupe too, but quiet at the source first.
-    if (tokenChanged) {
-      console.log('[Flowboard] Bearer token captured');
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'token_captured', flowKey }));
-      }
-      // Resolve the user's identity (email/name/picture) once per token —
-      // saves the popup + AccountPanel from showing "Connected via
-      // extension" placeholders. The token already has the userinfo.email
-      // + userinfo.profile scopes Flow needs anyway, so this is a free
-      // call. Errors are non-fatal and silent.
-      fetchAndPushUserInfo(token);
-    }
+    captureBearerToken(token, 'webRequest');
   },
   { urls: ['https://aisandbox-pa.googleapis.com/*', 'https://labs.google/*'] },
   ['requestHeaders', 'extraHeaders'],
@@ -210,6 +233,9 @@ function connectToAgent() {
         console.log('[Flowboard] logout requested by agent');
         cachedUserInfo = null;
         flowKey = null;
+        metrics.tokenCapturedAt = null;
+        chrome.storage.local.remove(['flowKey']);
+        chrome.storage.local.set({ metrics });
       } else if (msg.type === 'please_resend_userinfo') {
         // Agent's /api/auth/scan asks us to re-fetch userinfo when
         // its own cache is empty (e.g. agent restarted, or user
@@ -223,7 +249,10 @@ function connectToAgent() {
           fetchAndPushUserInfo(flowKey);
         } else {
           console.log('[Flowboard] please_resend_userinfo: no token captured yet');
+          captureTokenFromFlowTab();
         }
+      } else if (msg.type === 'refresh_token') {
+        captureTokenFromFlowTab();
       } else if (msg.method === 'api_request') {
         await handleApiRequest(msg);
       } else if (msg.method === 'trpc_request') {
@@ -451,12 +480,20 @@ async function captureTokenFromFlowTab() {
   }
 
   try {
+    const before = metrics.tokenCapturedAt;
     // Trigger a credentialed request so the page re-issues an Authorization header
     await chrome.scripting.executeScript({
       target: { tabId: tabs[0].id },
-      func:   () => fetch('/fx/tools/flow', { credentials: 'include' }),
+      world:  'MAIN',
+      func:   () => fetch('/fx/tools/flow', { credentials: 'include' }).catch(() => null),
     });
-    console.log('[Flowboard] Token refresh triggered on Flow tab');
+    await sleep(1500);
+    if (metrics.tokenCapturedAt === before) {
+      await chrome.tabs.reload(tabs[0].id);
+      console.log('[Flowboard] Token refresh requested Flow reload');
+    } else {
+      console.log('[Flowboard] Token refresh triggered on Flow tab');
+    }
   } catch (e) {
     console.error('[Flowboard] Token refresh failed:', e);
   }
@@ -638,17 +675,38 @@ function broadcastStatus() {
 // ─── Popup Message Handlers ─────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, _, reply) => {
+  if (msg.type === 'CONTENT_READY') {
+    init();
+    reply({ ok: true });
+    return true;
+  }
+
+  if (msg.type === 'PAGE_TOKEN_CAPTURED') {
+    const token = typeof msg.token === 'string' ? msg.token.trim() : '';
+    if (token) captureBearerToken(token, msg.source || 'page');
+    reply({ ok: !!token });
+    return true;
+  }
+
   if (msg.type === 'STATUS') {
     reply({
       connected:       ws?.readyState === WebSocket.OPEN,
       flowKeyPresent:  !!flowKey,
       manualDisconnect,
       tokenAge:        metrics.tokenCapturedAt ? Date.now() - metrics.tokenCapturedAt : null,
+      lastAuthAge:     metrics.lastAuthSeenAt ? Date.now() - metrics.lastAuthSeenAt : null,
+      lastAuthKind:    metrics.lastAuthKind,
+      lastAuthUrlType: metrics.lastAuthUrlType,
+      lastCaptureSkip: metrics.lastCaptureSkip,
       metrics: {
         requestCount: metrics.requestCount,
         successCount: metrics.successCount,
         failedCount:  metrics.failedCount,
         lastError:    metrics.lastError,
+        lastAuthAge:  metrics.lastAuthSeenAt ? Date.now() - metrics.lastAuthSeenAt : null,
+        lastAuthKind: metrics.lastAuthKind,
+        lastAuthUrlType: metrics.lastAuthUrlType,
+        lastCaptureSkip: metrics.lastCaptureSkip,
       },
       state,
     });
@@ -705,3 +763,4 @@ chrome.runtime.onMessage.addListener((msg, _, reply) => {
 });
 
 console.log('[Flowboard] Extension loaded');
+init();

@@ -437,7 +437,7 @@ async def run_pipeline(
 
         # Stamp running, dispatch.
         _stamp_node_status(nid, "running")
-        request_row_id = _create_request_row(nid, req_type, params)
+        request_row_id = _create_request_row(nid, req_type, params, account_id=None)
         get_worker().enqueue(request_row_id)
 
         # Wait for the row to settle.
@@ -549,10 +549,17 @@ def _stamp_node_status(
         s.commit()
 
 
-def _create_request_row(node_id: int, req_type: str, params: dict) -> int:
+def _create_request_row(
+    node_id: int,
+    req_type: str,
+    params: dict,
+    *,
+    account_id: int | None = None,
+) -> int:
     with get_session() as s:
         req = Request(
             node_id=node_id,
+            account_id=account_id,
             type=req_type,
             params=dict(params),
             status="queued",

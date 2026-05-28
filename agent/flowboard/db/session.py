@@ -50,6 +50,73 @@ def init_db() -> None:
                 )
                 conn.commit()
 
+        if insp.has_table("scenarioscene"):
+            scene_cols = {c["name"] for c in insp.get_columns("scenarioscene")}
+            if "voice_media_id" not in scene_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE scenarioscene ADD COLUMN voice_media_id VARCHAR"
+                )
+                conn.commit()
+
+        if insp.has_table("scenario"):
+            scenario_cols = {c["name"] for c in insp.get_columns("scenario")}
+            if "video_audio_mode" not in scenario_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE scenario ADD COLUMN video_audio_mode VARCHAR DEFAULT 'silent'"
+                )
+                conn.commit()
+            if "final_video_media_id" not in scenario_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE scenario ADD COLUMN final_video_media_id VARCHAR"
+                )
+                conn.commit()
+            if "voice_id" not in scenario_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE scenario ADD COLUMN voice_id VARCHAR"
+                )
+                conn.commit()
+
+        if insp.has_table("request"):
+            request_cols = {c["name"] for c in insp.get_columns("request")}
+            if "account_id" not in request_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE request ADD COLUMN account_id INTEGER"
+                )
+                conn.commit()
+            if "dispatch_attempts" not in request_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE request ADD COLUMN dispatch_attempts INTEGER DEFAULT 0"
+                )
+                conn.commit()
+            if "next_retry_at" not in request_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE request ADD COLUMN next_retry_at TIMESTAMP"
+                )
+                conn.commit()
+            if "last_dispatch_error" not in request_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE request ADD COLUMN last_dispatch_error VARCHAR"
+                )
+                conn.commit()
+
+        if insp.has_table("flowaccount"):
+            account_cols = {c["name"] for c in insp.get_columns("flowaccount")}
+            if "credential" not in account_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE flowaccount ADD COLUMN credential VARCHAR"
+                )
+                conn.commit()
+            if "email" not in account_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE flowaccount ADD COLUMN email VARCHAR"
+                )
+                conn.commit()
+            if "chrome_user_data_dir" not in account_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE flowaccount ADD COLUMN chrome_user_data_dir VARCHAR"
+                )
+                conn.commit()
+
     SQLModel.metadata.create_all(engine)
 
 

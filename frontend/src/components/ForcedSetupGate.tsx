@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getLlmConfig } from "../api/client";
+import { getElevenLabsStatus, getLlmConfig } from "../api/client";
 import { AiProviderDialog } from "./AiProviderDialog";
 
 /**
@@ -31,9 +31,12 @@ export function ForcedSetupGate() {
     let alive = true;
     const refresh = async () => {
       try {
-        const cfg = await getLlmConfig();
+        const [cfg, voice] = await Promise.all([
+          getLlmConfig(),
+          getElevenLabsStatus(),
+        ]);
         if (!alive) return;
-        setConfigured(cfg.configured);
+        setConfigured(cfg.configured && voice.configured);
       } catch {
         // Backend hiccup — leave the prior state in place. If the very
         // first call fails we stay at `null` (neutral, no forced
@@ -52,11 +55,13 @@ export function ForcedSetupGate() {
     // close immediately instead of waiting up to 30s for the next poll.
     const onConfigChange = () => void refresh();
     window.addEventListener("flowboard:llm-config-changed", onConfigChange);
+    window.addEventListener("flowboard:setup-config-changed", onConfigChange);
     return () => {
       alive = false;
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("flowboard:llm-config-changed", onConfigChange);
+      window.removeEventListener("flowboard:setup-config-changed", onConfigChange);
     };
   }, []);
 

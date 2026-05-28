@@ -52,11 +52,15 @@ class Edge(SQLModel, table=True):
 class Request(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="flowaccount.id", index=True)
     type: str
     params: dict = Field(default_factory=dict, sa_column=Column(JSON))
     status: str = "queued"
     result: dict = Field(default_factory=dict, sa_column=Column(JSON))
     error: Optional[str] = None
+    dispatch_attempts: int = 0
+    next_retry_at: Optional[datetime] = None
+    last_dispatch_error: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
     finished_at: Optional[datetime] = None
 
@@ -145,6 +149,60 @@ class Plan(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class Scenario(SQLModel, table=True):
+    """High-level script plan for a multi-scene Auto Flow run.
+
+    A Scenario belongs to a board and may optionally be represented by a
+    canvas node later. Task 1 only establishes the durable shape; planner,
+    generation, voice, lipsync, and merge execution will build on this table.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    board_id: int = Field(foreign_key="board.id", index=True)
+    node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
+    theme: str
+    extra_description: str = ""
+    content_style: str = ""
+    scene_count: int = 1
+    video_audio_mode: str = "silent"
+    voice_id: Optional[str] = None
+    final_video_media_id: Optional[str] = None
+    status: str = "draft"  # draft | planned | running | partial | done | failed
+    # Source refs selected by the user at planner time. Expected keys:
+    # background_media_ids, character_media_ids, visual_asset_media_ids.
+    refs: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+class ScenarioScene(SQLModel, table=True):
+    """One planned scene inside a Scenario.
+
+    Each row carries all text required by later stages: background prompt,
+    scene composition prompt, motion prompt, and voice script/direction.
+    Media ids are filled progressively as generation steps complete.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scenario_id: int = Field(foreign_key="scenario.id", index=True)
+    idx: int = Field(index=True)
+    title: str = ""
+    background_description: str = ""
+    background_image_prompt: str = ""
+    composition_prompt: str = ""
+    motion_prompt: str = ""
+    voice_script: str = ""
+    voice_direction: str = ""
+    duration_seconds: float = 8.0
+    status: str = "planned"  # planned | background_done | image_done | video_done | voice_done | error
+    # Optional per-scene ref choices. Same shape as Scenario.refs, but scoped
+    # to this scene if the planner decides a scene uses a subset.
+    refs: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    background_media_id: Optional[str] = None
+    image_media_id: Optional[str] = None
+    video_media_id: Optional[str] = None
+    voice_media_id: Optional[str] = None
+    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
 class PlanRevision(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     plan_id: int = Field(foreign_key="plan.id", index=True)
@@ -172,4 +230,40 @@ class BoardFlowProject(SQLModel, table=True):
     """
     board_id: int = Field(primary_key=True, foreign_key="board.id")
     flow_project_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowAccount(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: str
+    provider: str = "flow"
+    email: Optional[str] = None
+    status: str = "active"  # active | paused | disabled | unhealthy
+    priority_weight: int = 100
+    credential: Optional[str] = None
+    chrome_user_data_dir: Optional[str] = None
+    paygate_tier: Optional[str] = None
+    credits: Optional[str] = None
+    cooldown_until: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowAccountHealthEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="flowaccount.id", index=True)
+    status: str
+    message: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowDispatchEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    request_id: int = Field(foreign_key="request.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="flowaccount.id", index=True)
+    attempt_no: int = 1
+    outcome: str = "picked"  # picked | failed | done
+    decision_reason: str = ""
+    error_code: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)

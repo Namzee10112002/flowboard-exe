@@ -75,6 +75,32 @@ async def test_clear_extension_fails_pending_futures():
     result = await task
     assert result == {"error": "extension_disconnected"}
 
+def test_clear_identity_keeps_extension_connection():
+    client = FlowClient()
+    ws = FakeWs()
+    client.set_extension(ws)
+    client._flow_key = "ya29.old"
+    client._flow_key_present = True
+    client._user_info = {"email": "u@example.com"}
+    client._paygate_tier = "PAYGATE_TIER_TWO"
+
+    client.clear_identity()
+
+    assert client.connected is True
+    assert client.get_current_flow_token() is None
+    assert client.user_info is None
+    assert client.paygate_tier is None
+
+def test_clear_extension_ignores_stale_socket():
+    client = FlowClient()
+    current = FakeWs()
+    stale = FakeWs()
+    client.set_extension(current)
+
+    client.clear_extension(stale)
+
+    assert client.connected is True
+
 
 @pytest.mark.asyncio
 async def test_handle_token_captured_updates_stats():

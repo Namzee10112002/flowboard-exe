@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/requests", tags=["requests"])
 
 class RequestCreate(BaseModel):
     node_id: Optional[int] = None
+    account_id: Optional[int] = None
     type: str = Field(min_length=1, max_length=40)
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -24,6 +25,7 @@ def create_request(body: RequestCreate):
             raise HTTPException(404, "node not found")
         req = Request(
             node_id=body.node_id,
+            account_id=body.account_id,
             type=body.type,
             params=dict(body.params),
             status="queued",

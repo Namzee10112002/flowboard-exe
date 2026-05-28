@@ -14,6 +14,8 @@ from flowboard.db.models import (
     Plan,
     PlanRevision,
     Request,
+    Scenario,
+    ScenarioScene,
 )
 
 router = APIRouter(prefix="/api/boards", tags=["boards"])
@@ -102,6 +104,20 @@ def delete_board(board_id: int):
             s.exec(sql_delete(PlanRevision).where(PlanRevision.plan_id.in_(plan_ids)))
 
         # Edge has FK on Node (source_id, target_id) — must clear before Node.
+        scenario_ids = [
+            sc.id
+            for sc in s.exec(
+                select(Scenario).where(Scenario.board_id == board_id)
+            ).all()
+        ]
+        if scenario_ids:
+            s.exec(
+                sql_delete(ScenarioScene).where(
+                    ScenarioScene.scenario_id.in_(scenario_ids)
+                )
+            )
+            s.exec(sql_delete(Scenario).where(Scenario.board_id == board_id))
+
         s.exec(sql_delete(Edge).where(Edge.board_id == board_id))
         s.exec(sql_delete(Node).where(Node.board_id == board_id))
         s.exec(sql_delete(Plan).where(Plan.board_id == board_id))

@@ -25,6 +25,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+from collections import defaultdict
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,8 @@ class FlowClient:
         self._success_count = 0
         self._failed_count = 0
         self._last_error: Optional[str] = None
+        self._account_context: dict[int, dict[str, Any]] = defaultdict(dict)
+        self._active_account_id: Optional[int] = None
 
     # ── connection ─────────────────────────────────────────────────────────
     @property
@@ -92,15 +96,25 @@ class FlowClient:
     def set_extension(self, ws: Any) -> None:
         self._ws = ws
 
-    def clear_extension(self) -> None:
-        self._ws = None
+    def clear_identity(self) -> None:
+        """Drop auth/session state while keeping any live extension socket."""
         self._flow_key_present = False
         self._flow_key = None
-        # Drop the cached identity + tier — next reconnect will replay.
+        self._token_captured_at = None
+        self._last_tier_fetch_at = None
+        self._last_logged_key = None
         self._user_info = None
         self._paygate_tier = None
         self._sku = None
         self._credits = None
+        self._active_account_id = None
+
+    def clear_extension(self, ws: Optional[Any] = None) -> None:
+        if ws is not None and ws is not self._ws:
+            return
+        self._ws = None
+        # Drop the cached identity + tier; next reconnect will replay.
+        self.clear_identity()
         for fut in self._pending.values():
             if not fut.done():
                 fut.set_exception(ConnectionError("extension_disconnected"))
@@ -121,6 +135,12 @@ class FlowClient:
     @property
     def credits(self) -> Optional[int]:
         return self._credits
+
+    def get_current_flow_token(self) -> str | None:
+        return self._flow_key
+
+    def has_current_flow_token(self) -> bool:
+        return bool(self._flow_key)
 
     async def fetch_paygate_tier(self) -> bool:
         """Authoritative paygate tier resolution via the official Flow
@@ -183,6 +203,14 @@ class FlowClient:
         credits_val = data.get("credits")
         if isinstance(credits_val, int):
             self._credits = credits_val
+
+        if self._active_account_id is not None:
+            self.set_account_context(
+                self._active_account_id,
+                paygate_tier=tier,
+                sku=self._sku,
+                credits=self._credits,
+            )
         logger.info(
             "fetch_paygate_tier resolved tier=%s sku=%s credits=%s",
             tier, self._sku, self._credits,
@@ -194,6 +222,8 @@ class FlowClient:
         t = data.get("type")
         if t == "extension_ready":
             self._flow_key_present = bool(data.get("flowKeyPresent"))
+            if not self._flow_key_present:
+                self.clear_identity()
             logger.info("extension_ready flowKeyPresent=%s", self._flow_key_present)
             return
         if t == "token_captured":
@@ -203,6 +233,8 @@ class FlowClient:
             if isinstance(flow_key, str) and flow_key:
                 key_changed = flow_key != self._flow_key
                 self._flow_key = flow_key
+                if self._active_account_id is not None:
+                    self.set_account_context(self._active_account_id, flow_key=flow_key)
                 # Defensive dedupe — see _last_tier_fetch_at field comment.
                 # Skip the log + credits refetch when the token hasn't
                 # rotated and we already fetched within the rate-limit
@@ -233,10 +265,14 @@ class FlowClient:
                 # Clamp at the door instead.
                 allowed = ("email", "name", "picture", "verified_email")
                 self._user_info = {k: info[k] for k in allowed if k in info}
+                if self._active_account_id is not None:
+                    self.set_account_context(self._active_account_id, user_info=self._user_info)
                 logger.info(
                     "user_info captured for %s",
                     self._user_info.get("email") or "<no email>",
                 )
+                if self._active_account_id is not None:
+                    logger.info("user_info mapped to account_id=%s", self._active_account_id)
             return
         if t == "pong":
             return
@@ -275,6 +311,18 @@ class FlowClient:
             fut.set_result(data)
 
     # ── outbound ──────────────────────────────────────────────────────────
+    def _record_direct_response(self, data: dict) -> None:
+        status = data.get("status") if isinstance(data, dict) else None
+        failed = bool(data.get("error")) if isinstance(data, dict) else True
+        if isinstance(status, int) and status >= 400:
+            failed = True
+        if failed:
+            self._failed_count += 1
+            msg = data.get("error") if isinstance(data, dict) else "direct_request_failed"
+            self._last_error = str(msg)[:200]
+        else:
+            self._success_count += 1
+
     async def notify(self, message: dict) -> bool:
         """Fire-and-forget WS push to the extension. Returns False when the
         extension isn't connected so callers can surface a meaningful
@@ -323,6 +371,10 @@ class FlowClient:
             self._last_error = str(exc)
             return {"error": str(exc)}
 
+    async def extension_status(self, timeout: Optional[float] = 10.0) -> dict:
+        """Ask the extension for its own in-memory diagnostic status."""
+        return await self._send("get_status", {}, timeout=timeout)
+
     async def api_request(
         self,
         url: str,
@@ -337,6 +389,26 @@ class FlowClient:
         extension solves reCAPTCHA on an active Flow tab before firing the
         fetch and injects the token into the body's recaptchaContext fields.
         """
+        if self._active_account_id is not None:
+            self._request_count += 1
+            try:
+                from flowboard.services.flow_browser import flow_browser
+
+                resp = await flow_browser.api_request(
+                    self._active_account_id,
+                    url=url,
+                    method=method,
+                    headers=headers or {},
+                    body=body,
+                    captcha_action=captcha_action,
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("cdp api_request failed")
+                resp = {"status": 500, "error": str(exc)}
+            self._record_direct_response(resp)
+            return resp
+
         params: dict[str, Any] = {
             "url": url,
             "method": method,
@@ -360,6 +432,25 @@ class FlowClient:
         No captcha; just Bearer auth passthrough on a `credentials: include`
         fetch. Used for metadata calls like ``project.createProject``.
         """
+        if self._active_account_id is not None:
+            self._request_count += 1
+            try:
+                from flowboard.services.flow_browser import flow_browser
+
+                resp = await flow_browser.trpc_request(
+                    self._active_account_id,
+                    url=url,
+                    method=method,
+                    headers=headers or {},
+                    body=body,
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("cdp trpc_request failed")
+                resp = {"error": str(exc)}
+            self._record_direct_response(resp)
+            return resp
+
         return await self._send(
             "trpc_request",
             {"url": url, "method": method, "headers": headers or {}, "body": body},
@@ -367,6 +458,36 @@ class FlowClient:
         )
 
     # ── observability ─────────────────────────────────────────────────────
+    def set_active_account(self, account_id: int | None) -> None:
+        self._active_account_id = account_id
+
+    def set_account_context(
+        self,
+        account_id: int,
+        *,
+        flow_key: str | None = None,
+        paygate_tier: str | None = None,
+        user_info: dict[str, Any] | None = None,
+        sku: str | None = None,
+        credits: int | None = None,
+    ) -> None:
+        ctx = self._account_context[account_id]
+        if flow_key is not None:
+            ctx["flow_key"] = flow_key
+        if paygate_tier is not None:
+            ctx["paygate_tier"] = paygate_tier
+        if user_info is not None:
+            ctx["user_info"] = dict(user_info)
+        if sku is not None:
+            ctx["sku"] = sku
+        if credits is not None:
+            ctx["credits"] = credits
+
+    def get_account_context(self, account_id: int | None) -> dict[str, Any]:
+        if account_id is None:
+            return {}
+        return dict(self._account_context.get(account_id, {}))
+
     @property
     def ws_stats(self) -> dict:
         token_age = (

@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import {
   getAuthMe,
+  getHealth,
   logoutExtension,
   scanExtension,
   type AuthMe,
+  type HealthResponse,
 } from "../api/client";
 import { useGenerationStore } from "../store/generation";
 import { getLatestRelease, isNewerVersion, type LatestRelease } from "../api/github";
 import { SettingsPanel } from "./SettingsPanel";
+import { AccountManagerDialog } from "./AccountManagerDialog";
 import packageJson from "../../package.json";
+import { t } from "../i18n";
 
 const APP_VERSION: string = packageJson.version;
 
@@ -29,6 +33,7 @@ const APP_VERSION: string = packageJson.version;
 export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
   const setStorePaygateTier = useGenerationStore.setState;
   const [open, setOpen] = useState(false);
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [profile, setProfile] = useState<AuthMe | null>(null);
   // Counts polls that returned a profile but no tier. Used to delay
   // the "Tier unknown" banner so it doesn't flash on initial cold-start
@@ -133,10 +138,16 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
   // endpoint is cached by the helper (sessionStorage, 1h) so this
   // doesn't burn API quota on every mount.
   const [latestRelease, setLatestRelease] = useState<LatestRelease | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   useEffect(() => {
     let alive = true;
     getLatestRelease().then((r) => {
       if (alive) setLatestRelease(r);
+    });
+    getHealth().then((h) => {
+      if (alive) setHealth(h);
+    }).catch(() => {
+      if (alive) setHealth(null);
     });
     return () => {
       alive = false;
@@ -145,10 +156,12 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
   const updateAvailable =
     !!latestRelease?.tagName &&
     isNewerVersion(latestRelease.tagName, APP_VERSION);
+  const visibleVersion = health?.build?.version || health?.app_version || APP_VERSION;
+  const codexFixActive = health?.build?.codex_git_repo_check_skipped === true;
 
   const tier = profile?.paygate_tier ?? null;
 
-  const displayName = profile?.name?.trim() || "Flow account";
+  const displayName = profile?.name?.trim() || t("accountPanelFlowAccount");
   const email = profile?.email ?? null;
   const picture = profile?.picture ?? null;
   const initial = displayName.slice(0, 1).toUpperCase();
@@ -176,7 +189,7 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
           !email ? " account-panel--disconnected" : ""
         }`}
         role="region"
-        aria-label="Account"
+        aria-label={t("accountPanelRegion")}
       >
         {/* Avatar + cog only render when an extension session is live —
             without an email there's no profile to show and the settings
@@ -216,7 +229,7 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
             {(tier || creditsLabel) && (
               <div
                 className="account-panel__status-row"
-                title={tier ? `${tierLabel}${creditsLabel ? ` · ${creditsLabel} credits remaining` : ""}` : undefined}
+                title={tier ? `${tierLabel}${creditsLabel ? ` · ${t("accountPanelCreditsRemaining", { credits: creditsLabel })}` : ""}` : undefined}
               >
                 {tier && (
                   <span
@@ -232,13 +245,21 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
                 {creditsLabel && (
                   <span
                     className="account-panel__credits-inline"
-                    title={`${creditsLabel} credits remaining`}
+                    title={t("accountPanelCreditsRemaining", { credits: creditsLabel })}
                   >
                     <span className="account-panel__credits-value">{creditsLabel}</span>
                   </span>
                 )}
               </div>
             )}
+            <button
+              type="button"
+              className="account-panel__scan-btn"
+              onClick={() => setAccountManagerOpen(true)}
+              title={t("accountPanelOpenManager")}
+            >
+              {t("accountPanelManageAccounts")}
+            </button>
           </div>
         )}
         {!collapsed && !email && (
@@ -252,30 +273,40 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
             {scanState === "no-extension" ? (
               <div className="account-panel__scan-hint" role="alert">
                 <span className="account-panel__scan-hint-title">
-                  ⚠ Extension not detected
+                  ⚠ {t("accountPanelExtNotDetected")}
                 </span>
                 <span className="account-panel__scan-hint-text">
-                  Refresh the Flow tab, then reload the Flowboard extension.
+                  {t("accountPanelExtRecovery")}
                 </span>
                 <button
                   type="button"
                   className="account-panel__scan-btn"
                   onClick={handleScan}
-                  title="Scan again for an extension connection"
+                  title={t("accountPanelScanAgainTitle")}
                 >
-                  Try again
+                  {t("accountPanelTryAgain")}
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                className="account-panel__scan-btn"
-                onClick={handleScan}
-                disabled={scanState === "scanning"}
-                title="Scan for an extension connection and re-fetch user info"
-              >
-                {scanState === "scanning" ? "Scanning…" : "🔍 Scan extension"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="account-panel__scan-btn"
+                  onClick={handleScan}
+                  disabled={scanState === "scanning"}
+                  title={t("accountPanelScanTitle")}
+                >
+                  {scanState === "scanning" ? t("accountPanelScanning") : `🔍 ${t("accountPanelScanExtension")}`}
+                </button>
+                <button
+                  type="button"
+                  className="account-panel__scan-btn"
+                  onClick={() => setAccountManagerOpen(true)}
+                  title={t("accountPanelOpenManager")}
+                >
+                  {t("accountPanelManageAccounts")}
+                </button>
+              </>
             )}
           </div>
         )}
@@ -284,8 +315,8 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
             type="button"
             className="account-panel__cog"
             onClick={() => setOpen((v) => !v)}
-            aria-label="Open settings"
-            title="Settings"
+            aria-label={t("accountPanelOpenSettings")}
+            title={t("accountPanelSettings")}
           >
             ⚙
           </button>
@@ -294,15 +325,23 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
       {!collapsed && (
         <div className="account-panel__version-row">
           <span className="account-panel__version-label">
-            Flowboard <code>v{APP_VERSION}</code>
+            Flowboard <code>v{visibleVersion}</code>
           </span>
+          {codexFixActive && (
+            <span
+              className="account-panel__update-pill account-panel__update-pill--ok"
+              title="Codex CLI trust-directory fix is active in this build"
+            >
+              Codex fix
+            </span>
+          )}
           {updateAvailable && latestRelease && (
             <a
               className="account-panel__update-pill"
               href={latestRelease.htmlUrl}
               target="_blank"
               rel="noopener noreferrer"
-              title={`Latest release ${latestRelease.tagName} — click to view`}
+              title={t("accountPanelLatestReleaseTitle", { tag: latestRelease.tagName })}
             >
               ↑ {latestRelease.tagName}
             </a>
@@ -320,10 +359,10 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
           <span className="account-panel__tier-warning-icon" aria-hidden="true">⚠</span>
           <div className="account-panel__tier-warning-body">
             <span className="account-panel__tier-warning-title">
-              Tier unknown
+              {t("accountPanelTierUnknown")}
             </span>
             <span className="account-panel__tier-warning-text">
-              Open Flow once so the extension can detect your plan.
+              {t("accountPanelTierUnknownHint")}
             </span>
           </div>
           <a
@@ -332,7 +371,7 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
             target="_blank"
             rel="noopener noreferrer"
           >
-            Open Flow ↗
+            {t("accountPanelOpenFlow")}
           </a>
         </div>
       )}
@@ -347,6 +386,10 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
           setOpen(false);
         } : undefined}
         logoutPending={logoutPending}
+      />
+      <AccountManagerDialog
+        open={accountManagerOpen}
+        onClose={() => setAccountManagerOpen(false)}
       />
     </>
   );

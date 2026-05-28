@@ -178,6 +178,73 @@ def test_test_endpoint_unknown_provider_404(client, tmp_secrets_path):
     assert resp.status_code == 404
 
 
+def test_codex_bootstrap_status(client, monkeypatch):
+    monkeypatch.setattr(
+        "flowboard.routes.llm.codex_bootstrap_status",
+        lambda: {
+            "npm_present": True,
+            "npm_path": "C:/node/npm.cmd",
+            "npm_version": "10.0.0",
+            "bundled_node_present": False,
+            "codex_present": False,
+            "codex_path": None,
+            "codex_version": None,
+            "codex_install_dir": "C:/flowboard/tools/codex",
+            "node_install_dir": "C:/flowboard/tools/node",
+        },
+    )
+
+    resp = client.get("/api/llm/providers/openai/codex-bootstrap")
+
+    assert resp.status_code == 200
+    assert resp.json()["npm_present"] is True
+
+
+def test_codex_bootstrap_install_resets_openai_cache(client, monkeypatch):
+    openai = registry._PROVIDERS["openai"]
+    openai._cli_available = True  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        "flowboard.routes.llm.bootstrap_codex_cli",
+        lambda: {
+            "ok": True,
+            "changed": True,
+            "node_downloaded": True,
+            "status": {
+                "npm_present": True,
+                "npm_path": "C:/flowboard/tools/node/npm.cmd",
+                "npm_version": "10.0.0",
+                "bundled_node_present": True,
+                "codex_present": True,
+                "codex_path": "C:/flowboard/tools/codex/node_modules/.bin/codex.cmd",
+                "codex_version": "codex 1.0.0",
+                "codex_install_dir": "C:/flowboard/tools/codex",
+                "node_install_dir": "C:/flowboard/tools/node",
+            },
+        },
+    )
+
+    resp = client.post("/api/llm/providers/openai/codex-bootstrap")
+
+    assert resp.status_code == 200
+    assert resp.json()["changed"] is True
+    assert openai._cli_available is False  # type: ignore[attr-defined]
+
+
+def test_codex_bootstrap_install_failure_returns_409(client, monkeypatch):
+    from flowboard.services.llm.codex_bootstrap import CodexBootstrapError
+
+    def fail():
+        raise CodexBootstrapError("npm_not_found")
+
+    monkeypatch.setattr("flowboard.routes.llm.bootstrap_codex_cli", fail)
+
+    resp = client.post("/api/llm/providers/openai/codex-bootstrap")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "npm_not_found"
+
+
 # ── GET /api/llm/config ───────────────────────────────────────────────
 
 

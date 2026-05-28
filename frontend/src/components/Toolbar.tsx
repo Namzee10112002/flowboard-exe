@@ -3,8 +3,13 @@ import { useBoardStore } from "../store/board";
 import { ActivityBell } from "./activity/ActivityBell";
 import { AiProviderBadge } from "./AiProviderBadge";
 import { SponsorButton } from "./SponsorDialog";
+import { t } from "../i18n";
 
-export function Toolbar() {
+interface ToolbarProps {
+  onOpenScenarioPlanner?: () => void;
+}
+
+export function Toolbar({ onOpenScenarioPlanner }: ToolbarProps) {
   const boardName = useBoardStore((s) => s.boardName);
   const renameBoard = useBoardStore((s) => s.renameBoard);
 
@@ -45,20 +50,30 @@ export function Toolbar() {
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={onKeyDown}
-          aria-label="Board name"
+          aria-label={t("toolbarBoardName")}
         />
       ) : (
         <button
           className="toolbar-name-btn"
           onClick={startEdit}
-          aria-label="Rename board"
-          title="Click to rename"
+          aria-label={t("toolbarRenameBoard")}
+          title={t("toolbarClickToRename")}
         >
-          {boardName || "Untitled"}
+          {boardName || t("toolbarUntitled")}
         </button>
       )}
 
       <div className="toolbar-actions">
+        {onOpenScenarioPlanner && (
+          <button
+            className="toolbar-action-btn"
+            type="button"
+            onClick={onOpenScenarioPlanner}
+            title={t("toolbarAutoFlowTitle")}
+          >
+            {t("toolbarAutoFlow")}
+          </button>
+        )}
         <ActivityBell />
         <AiProviderBadge />
         <SponsorButton />

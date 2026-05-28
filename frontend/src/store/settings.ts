@@ -49,15 +49,19 @@ export const OMNI_FLASH_CREDIT_COST: Record<4 | 6 | 8 | 10, number> = {
 export type OmniFlashDuration = 4 | 6 | 8 | 10;
 export const OMNI_FLASH_DURATIONS: OmniFlashDuration[] = [4, 6, 8, 10];
 
+export type Locale = "en" | "vi";
+
 interface SettingsState {
   imageModel: ImageModelKey;
   videoQuality: VideoQuality;
   videoModel: VideoModelFamily;
   omniFlashDuration: OmniFlashDuration;
+  locale: Locale;
   setImageModel(model: ImageModelKey): void;
   setVideoQuality(q: VideoQuality): void;
   setVideoModel(m: VideoModelFamily): void;
   setOmniFlashDuration(d: OmniFlashDuration): void;
+  setLocale(locale: Locale): void;
 }
 
 const STORAGE_KEY = "flowboard.settings.v1";
@@ -67,6 +71,7 @@ interface PersistShape {
   videoQuality?: VideoQuality;
   videoModel?: VideoModelFamily;
   omniFlashDuration?: OmniFlashDuration;
+  locale?: Locale;
 }
 
 function loadPersisted(): PersistShape {
@@ -100,6 +105,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       : "fast",
   videoModel: persisted.videoModel ?? "veo",
   omniFlashDuration: persisted.omniFlashDuration ?? 4,
+  locale: persisted.locale ?? "en",
   setImageModel(model) {
     set({ imageModel: model });
     persist({
@@ -107,6 +113,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoQuality: get().videoQuality,
       videoModel: get().videoModel,
       omniFlashDuration: get().omniFlashDuration,
+      locale: get().locale,
     });
   },
   setVideoQuality(q) {
@@ -116,6 +123,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoQuality: q,
       videoModel: get().videoModel,
       omniFlashDuration: get().omniFlashDuration,
+      locale: get().locale,
     });
   },
   setVideoModel(m) {
@@ -125,6 +133,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoQuality: get().videoQuality,
       videoModel: m,
       omniFlashDuration: get().omniFlashDuration,
+      locale: get().locale,
     });
   },
   setOmniFlashDuration(d) {
@@ -134,6 +143,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoQuality: get().videoQuality,
       videoModel: get().videoModel,
       omniFlashDuration: d,
+      locale: get().locale,
+    });
+  },
+  setLocale(locale) {
+    set({ locale });
+    persist({
+      imageModel: get().imageModel,
+      videoQuality: get().videoQuality,
+      videoModel: get().videoModel,
+      omniFlashDuration: get().omniFlashDuration,
+      locale,
     });
   },
 }));

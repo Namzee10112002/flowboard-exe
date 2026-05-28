@@ -6,7 +6,9 @@ import {
   type VideoQuality,
 } from "../store/settings";
 import { getLatestRelease, isNewerVersion, type LatestRelease } from "../api/github";
+import { getHealth, type HealthResponse } from "../api/client";
 import packageJson from "../../package.json";
+import { t } from "../i18n";
 
 const APP_VERSION: string = packageJson.version;
 const COMMUNITY_URL = "https://www.facebook.com/groups/flowkit.flowboard.community";
@@ -95,6 +97,8 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
   const setVideoQuality = useSettingsStore((s) => s.setVideoQuality);
   const videoModel = useSettingsStore((s) => s.videoModel);
   const setVideoModel = useSettingsStore((s) => s.setVideoModel);
+  const locale = useSettingsStore((s) => s.locale);
+  const setLocale = useSettingsStore((s) => s.setLocale);
 
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -111,11 +115,17 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
   // Check GitHub for a newer release. Cached in sessionStorage by
   // the helper, so re-opening the dialog doesn't burn API quota.
   const [latestRelease, setLatestRelease] = useState<LatestRelease | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   useEffect(() => {
     if (!open) return;
     let alive = true;
     getLatestRelease().then((r) => {
       if (alive) setLatestRelease(r);
+    });
+    getHealth().then((h) => {
+      if (alive) setHealth(h);
+    }).catch(() => {
+      if (alive) setHealth(null);
     });
     return () => {
       alive = false;
@@ -131,7 +141,10 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
     ? "Ultra"
     : tier === "PAYGATE_TIER_ONE"
       ? "Pro"
-      : "Detecting…";
+      : t("settingsTierDetecting");
+  const visibleVersion = health?.build?.version || health?.app_version || APP_VERSION;
+  const codexFixActive = health?.build?.codex_git_repo_check_skipped === true;
+  const updateStatus = health?.update_status ?? null;
 
   return (
     <div
@@ -146,27 +159,27 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
         className="settings-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="Settings"
+        aria-label={t("settingsTitle")}
       >
         <div className="settings-panel__header">
-        <span className="settings-panel__title">Settings</span>
+        <span className="settings-panel__title">{t("settingsTitle")}</span>
         <button
           type="button"
           className="settings-panel__close"
           onClick={onClose}
-          aria-label="Close settings"
+          aria-label={t("settingsClose")}
         >
           ×
         </button>
       </div>
 
       <div className="settings-panel__section">
-        <div className="settings-panel__label">Account tier</div>
+        <div className="settings-panel__label">{t("settingsAccountTier")}</div>
         <div className="settings-panel__value settings-panel__value--readonly">
           {tierLabel}
         </div>
         <div className="settings-panel__hint">
-          Auto-detected from Google Flow when the first project loads.
+          {t("settingsTierHint")}
         </div>
       </div>
 
@@ -176,7 +189,7 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
           stamps videoModel="omni_flash" (duration is picked per dispatch
           in the GenerationDialog). */}
       <div className="settings-panel__section">
-        <div className="settings-panel__label">Video model</div>
+        <div className="settings-panel__label">{t("settingsVideoModel")}</div>
         <div className="settings-panel__radio-group">
           {VIDEO_QUALITIES.map((q) => {
             const locked = q.ultraOnly && tier !== "PAYGATE_TIER_TWO";
@@ -201,7 +214,7 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
                   <div className="settings-panel__radio-label">
                     {q.label}
                     {q.ultraOnly && (
-                      <span className="model-badge">Ultra only</span>
+                      <span className="model-badge">{t("settingsUltraOnly")}</span>
                     )}
                   </div>
                   <div className="settings-panel__radio-hint">{q.hint}</div>
@@ -234,7 +247,7 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
       </div>
 
       <div className="settings-panel__section">
-        <div className="settings-panel__label">Image model</div>
+        <div className="settings-panel__label">{t("settingsImageModel")}</div>
         <div className="settings-panel__radio-group">
           {IMAGE_MODELS.map((m) => (
             <label
@@ -257,34 +270,78 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
         </div>
       </div>
 
+
+
       <div className="settings-panel__section">
-        <div className="settings-panel__label">About</div>
+        <div className="settings-panel__label">{t("settingsLanguage")}</div>
+        <div className="settings-panel__radio-group">
+          <label className={`settings-panel__radio${locale === "en" ? " settings-panel__radio--active" : ""}`}>
+            <input
+              type="radio"
+              name="language"
+              value="en"
+              checked={locale === "en"}
+              onChange={() => setLocale("en")}
+            />
+            <div className="settings-panel__radio-label">{t("settingsLanguageEnglish")}</div>
+          </label>
+          <label className={`settings-panel__radio${locale === "vi" ? " settings-panel__radio--active" : ""}`}>
+            <input
+              type="radio"
+              name="language"
+              value="vi"
+              checked={locale === "vi"}
+              onChange={() => setLocale("vi")}
+            />
+            <div className="settings-panel__radio-label">{t("settingsLanguageVietnamese")}</div>
+          </label>
+        </div>
+      </div>
+      <div className="settings-panel__section">
+        <div className="settings-panel__label">{t("settingsAbout")}</div>
         <div className="settings-panel__about-row">
-          <span className="settings-panel__about-key">Version</span>
+          <span className="settings-panel__about-key">{t("settingsVersion")}</span>
           <span className="settings-panel__about-value">
-            <code>v{APP_VERSION}</code>
+            <code>v{visibleVersion}</code>
             {updateAvailable && latestRelease && (
               <a
                 className="settings-panel__update-badge"
                 href={latestRelease.htmlUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={`Latest: ${latestRelease.tagName}`}
+                title={t("settingsLatestTitle", { tag: latestRelease.tagName })}
               >
-                New version {latestRelease.tagName} →
+                {t("settingsNewVersion", { tag: latestRelease.tagName })}
               </a>
             )}
           </span>
         </div>
         <div className="settings-panel__about-row">
-          <span className="settings-panel__about-key">Community</span>
+          <span className="settings-panel__about-key">Codex CLI</span>
+          <span className="settings-panel__about-value">
+            <span className={`settings-panel__update-badge${codexFixActive ? " settings-panel__update-badge--ok" : ""}`}>
+              {codexFixActive ? "trust fix active" : "trust fix unknown"}
+            </span>
+          </span>
+        </div>
+        {updateStatus?.status && (
+          <div className="settings-panel__about-row">
+            <span className="settings-panel__about-key">Last update</span>
+            <span className="settings-panel__about-value">
+              <code>{updateStatus.status}</code>
+              {updateStatus.tag && <span>{` ${updateStatus.tag}`}</span>}
+            </span>
+          </div>
+        )}
+        <div className="settings-panel__about-row">
+          <span className="settings-panel__about-key">{t("settingsCommunity")}</span>
           <a
             className="settings-panel__about-link"
             href={COMMUNITY_URL}
             target="_blank"
             rel="noopener noreferrer"
           >
-            FlowKit & Flowboard on Facebook →
+            {t("settingsCommunityLink")}
           </a>
         </div>
       </div>
@@ -300,12 +357,10 @@ export function SettingsPanel({ open, onClose, onLogout, logoutPending }: Settin
             onClick={onLogout}
             disabled={logoutPending}
           >
-            {logoutPending ? "Signing out…" : "Sign out from Flow account"}
+            {logoutPending ? t("settingsSigningOut") : t("settingsSignOut")}
           </button>
           <div className="settings-panel__hint">
-            Clears the cached identity and tells the extension to drop
-            its in-memory token. The WebSocket stays open so signing
-            back in doesn't require a Chrome restart.
+            {t("settingsSignOutHint")}
           </div>
         </div>
       )}

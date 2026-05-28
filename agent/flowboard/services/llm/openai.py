@@ -24,13 +24,12 @@ which transport ran.
 """
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 import logging
 import mimetypes
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -40,10 +39,10 @@ import httpx
 from .base import LLMError
 from . import secrets
 from .cli_utils import (
+    build_cli_env,
     resolve_cli_binary,
     validate_prompt_size,
     validate_attachment_paths,
-    DEFAULT_SUBPROCESS_TIMEOUT,
     CLI_PROBE_TIMEOUT,
 )
 
@@ -105,6 +104,7 @@ class OpenAIProvider:
                 [codex_bin, "--version"],
                 capture_output=True,
                 timeout=CLI_PROBE_TIMEOUT,
+                env=build_cli_env(_CLI_BIN),
             )
             self._cli_available = result.returncode == 0
         except (FileNotFoundError, PermissionError):
@@ -117,13 +117,16 @@ class OpenAIProvider:
         if not self._cli_available:
             return
 
-        # Step 2: parse `--help` for an image-attachment flag.
+        # Step 2: parse `codex exec --help` for an image-attachment flag.
+        # Image support is scoped to the non-interactive exec command in
+        # current Codex CLI builds, so top-level `codex --help` is not enough.
         try:
             codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
             result = subprocess.run(
-                [codex_bin, "--help"],
+                [codex_bin, "exec", "--help"],
                 capture_output=True,
                 timeout=CLI_PROBE_TIMEOUT,
+                env=build_cli_env(_CLI_BIN),
             )
             stdout_b = result.stdout
         except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
@@ -235,8 +238,7 @@ class OpenAIProvider:
         attachments: Optional[list[str]],
         timeout: float,
     ) -> str:
-        """Spawn `codex exec --output-format json -p <prompt>` and parse
-        the JSON envelope (similar shape to `claude` CLI)."""
+        """Spawn `codex exec -` and return the final response text."""
         import os
 
         # Validate inputs
@@ -249,62 +251,64 @@ class OpenAIProvider:
             raise LLMError(f"Invalid input: {exc}") from exc
 
         codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
-        # Pipe the prompt via stdin (`-` sentinel) instead of as an argv
-        # token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
+        # Pipe the prompt via stdin (`-` positional sentinel) instead of as an
+        # argv token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
         # cmd.exe re-parses argv for ``.cmd``-shimmed binaries and
         # mangles newlines / quotes in long prompts. Stdin sidesteps the
-        # parser entirely.
-        args: list[str] = [
-            codex_bin, "exec", "--output-format", "json", "-p", "-",
-        ]
+        # parser entirely. Do not use `-p`: in current Codex CLI it means
+        # `--profile`, so `-p -` is interpreted as profile name "-".
+        prompt_parts: list[str] = []
         if system_prompt:
-            args += ["--system", system_prompt]
-        if attachments and self._cli_image_flag:
-            for path in attachments:
-                args += [self._cli_image_flag, os.path.abspath(path)]
+            prompt_parts.append(f"[System]\n{system_prompt}")
+        prompt_parts.append(f"[User]\n{user_prompt}")
+        full_prompt = "\n\n".join(prompt_parts)
 
-        try:
-            result = subprocess.run(
-                args,
-                input=user_prompt.encode("utf-8"),
-                capture_output=True,
-                timeout=timeout,
-            )
-        except FileNotFoundError as exc:
-            raise LLMError("codex CLI not found on PATH") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise LLMError(f"codex CLI timed out after {timeout}s") from exc
-        except Exception as exc:  # noqa: BLE001
-            raise LLMError(f"codex CLI error: {exc}") from exc
+        with tempfile.TemporaryDirectory(prefix="flowboard-codex-") as tmpdir:
+            output_path = Path(tmpdir) / "last-message.txt"
+            args: list[str] = [
+                codex_bin,
+                "exec",
+                "--skip-git-repo-check",
+                "--output-last-message",
+                str(output_path),
+                "-",
+            ]
+            if attachments and self._cli_image_flag:
+                for path in attachments:
+                    args += [self._cli_image_flag, os.path.abspath(path)]
 
-        if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace")[:400]
-            raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
+            try:
+                result = subprocess.run(
+                    args,
+                    input=full_prompt.encode("utf-8"),
+                    capture_output=True,
+                    timeout=timeout,
+                    env=build_cli_env(_CLI_BIN),
+                )
+            except FileNotFoundError as exc:
+                raise LLMError("codex CLI not found on PATH") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise LLMError(f"codex CLI timed out after {timeout}s") from exc
+            except Exception as exc:  # noqa: BLE001
+                raise LLMError(f"codex CLI error: {exc}") from exc
 
-        stdout = result.stdout.decode(errors="replace")
-        try:
-            envelope = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise LLMError(
-                f"codex CLI returned non-JSON output: {stdout[:200]}"
-            ) from exc
+            if result.returncode != 0:
+                stderr = result.stderr.decode(errors="replace")[:400]
+                raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
 
-        if not isinstance(envelope, dict):
-            raise LLMError("codex CLI envelope is not an object")
+            if output_path.exists():
+                output_text = output_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                ).strip()
+                if output_text:
+                    return output_text
 
-        # Codex envelope shape mirrors Claude CLI: {result: "..."} or
-        # {is_error: true, ...}. Tolerate both `result` and `output_text`
-        # since the exact field name has shifted across CLI versions.
-        if envelope.get("is_error") or envelope.get("error"):
-            raise LLMError(
-                f"codex CLI reported error: "
-                f"{envelope.get('error') or envelope.get('result') or 'unknown'}"
-            )
-        for key in ("result", "output_text", "text"):
-            val = envelope.get(key)
-            if isinstance(val, str):
-                return val
-        raise LLMError(f"codex CLI envelope missing string output: {envelope!r:.200}")
+            stdout = result.stdout.decode(errors="replace").strip()
+            if stdout:
+                return stdout
+
+            raise LLMError("codex CLI produced no output")
 
     # ── API dispatch ─────────────────────────────────────────────────
 

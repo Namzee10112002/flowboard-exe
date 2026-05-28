@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  bootstrapCodexCli,
   getLlmConfig,
   getLlmProviders,
   setLlmConfig,
@@ -108,6 +109,7 @@ export function AiProvidersSection() {
   const [applying, setApplying] = useState(false);
   const [helpFor, setHelpFor] = useState<LLMProviderName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [codexInstalling, setCodexInstalling] = useState(false);
 
   const aliveRef = useRef(true);
   useEffect(() => {
@@ -213,6 +215,26 @@ export function AiProvidersSection() {
       );
     } finally {
       if (aliveRef.current) setApplying(false);
+    }
+  }
+
+  async function handleBootstrapCodex() {
+    if (codexInstalling) return;
+    setCodexInstalling(true);
+    try {
+      const res = await bootstrapCodexCli();
+      showToast(
+        res.changed
+          ? "Codex installed. Sign in with Codex, then test the connection."
+          : "Codex is already installed.",
+      );
+      await refresh();
+    } catch (err) {
+      showToast(
+        `Codex install failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      if (aliveRef.current) setCodexInstalling(false);
     }
   }
 
@@ -325,6 +347,16 @@ export function AiProvidersSection() {
               >
                 Setup help →
               </button>
+              {pending === "openai" && (
+                <button
+                  type="button"
+                  className="selection-panel__setup-btn"
+                  onClick={handleBootstrapCodex}
+                  disabled={codexInstalling}
+                >
+                  {codexInstalling ? "Installing Codex..." : "Install Codex automatically"}
+                </button>
+              )}
             </div>
           ) : (
             // Ready branch: provider is connected. Show ONE connection

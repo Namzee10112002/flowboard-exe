@@ -1,9 +1,23 @@
 import { create } from "zustand";
-import { ensureBoardProject, createRequest, getRequest, patchNode } from "../api/client";
-import { useBoardStore } from "./board";
+import {
+  createRequest,
+  ensureBoardProject,
+  getRequest,
+  humanizeErrorMessage,
+  patchNode,
+} from "../api/client";
+import { useBoardStore, type NodeStatus } from "./board";
 import { useSettingsStore } from "./settings";
 
 type PollEntry = { requestId: number; timerId: ReturnType<typeof setTimeout> | null };
+type StoryboardShot = {
+  idx: number;
+  prompt?: string;
+  parentShotIdx?: number | null;
+  mediaId?: string;
+  status: "idle" | "queued" | "running" | "done" | "error" | "blocked";
+  error?: string;
+};
 
 interface GenerationState {
   active: Record<string, PollEntry>;
@@ -47,6 +61,18 @@ interface GenerationState {
     rfId: string,
     opts: { prompt: string; refMediaIds?: string[]; aspectRatio?: string },
   ): Promise<void>;
+
+  dispatchStoryboard(
+    rfId: string,
+    opts: {
+      shotCount: number;
+      narrativeSeed?: string;
+      aspectRatio?: string;
+      paygateTier?: string;
+    },
+  ): Promise<void>;
+
+  retryStoryboardShot(rfId: string, shotIdx: number): Promise<void>;
 
   cancelGeneration(rfId: string): void;
   clearError(): void;
@@ -452,12 +478,12 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             const errMsg =
               req.status === "timeout"
                 ? `Timed out after 5 minutes (${req.error ?? "video_timeout"})`
-                : (req.error ?? "unknown");
+                : humanizeErrorMessage(req.error ?? "unknown");
             useBoardStore.getState().updateNodeData(rfId, { status: "error", error: errMsg });
             set((s) => {
               const next = { ...s.active };
               delete next[rfId];
-              return { active: next, error: errMsg };
+              return { active: next, error: errMsg || "Generation failed" };
             });
           } else if (req.status === "canceled") {
             // User-initiated cancel from the activity bell. Don't
@@ -633,7 +659,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const errMsg =
           req.status === "timeout"
             ? `Timed out after 5 minutes (${req.error ?? "video_timeout"})`
-            : (req.error ?? "refine failed");
+            : humanizeErrorMessage(req.error ?? "refine failed");
         useBoardStore.getState().updateNodeData(rfId, {
           status: "error",
           error: errMsg,
@@ -649,6 +675,351 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           active: { ...s.active, [rfId]: { requestId, timerId: t } },
         }));
         console.warn("refine poll failed", err);
+      }
+    };
+    setTimeout(poll, 800);
+  },
+
+  async dispatchStoryboard(rfId, opts) {
+    const projectId = await get().ensureProjectId();
+    if (projectId === null) return;
+
+    const knownTier = opts.paygateTier ?? get().paygateTier;
+    if (!knownTier) {
+      set({
+        error:
+          "Open Flow once so the extension can detect your plan, then retry.",
+      });
+      useBoardStore.getState().updateNodeData(rfId, {
+        status: "error",
+        error: "paygate_tier_unknown",
+      });
+      return;
+    }
+
+    const shotCount = Math.max(1, Math.min(opts.shotCount, 8));
+    const aspectRatio = opts.aspectRatio ?? "IMAGE_ASPECT_RATIO_LANDSCAPE";
+
+    // Cancel any in-flight poll for this node.
+    const existingEntry = get().active[rfId];
+    if (existingEntry && existingEntry.timerId !== null) {
+      clearTimeout(existingEntry.timerId);
+    }
+
+    // Optimistic shots[] — placeholders so the UI shows N tiles immediately.
+    const placeholderShots = Array.from({ length: shotCount }, (_, k) => ({
+      idx: k,
+      prompt: "",
+      parentShotIdx: null as number | null,
+      status: "queued" as const,
+    }));
+    useBoardStore.getState().updateNodeData(rfId, {
+      status: "queued",
+      shots: placeholderShots,
+      shotCount,
+      narrativeSeed: opts.narrativeSeed,
+      aspectRatio,
+      mediaIds: Array.from({ length: shotCount }, () => null),
+      mediaId: undefined,
+      error: undefined,
+    });
+
+    const nodeDbId = parseInt(rfId, 10);
+    const refMediaIds = collectUpstreamRefMediaIds(rfId);
+    let reqDto;
+    try {
+      reqDto = await createRequest({
+        type: "gen_storyboard",
+        node_id: isNaN(nodeDbId) ? undefined : nodeDbId,
+        params: {
+          shot_count: shotCount,
+          narrative_seed: opts.narrativeSeed ?? "",
+          project_id: projectId,
+          aspect_ratio: aspectRatio,
+          paygate_tier: knownTier,
+          image_model: useSettingsStore.getState().imageModel,
+          global_ref_media_ids: refMediaIds,
+        },
+      });
+    } catch (err) {
+      useBoardStore.getState().updateNodeData(rfId, {
+        status: "error",
+        error: err instanceof Error ? err.message : "request failed",
+      });
+      set({ error: err instanceof Error ? err.message : "Generation failed" });
+      return;
+    }
+
+    const requestId = reqDto.id;
+    const MAX_NETWORK_RETRIES = 8;
+    let networkRetries = 0;
+
+    const poll = async () => {
+      if (get().active[rfId] === undefined) return;
+      try {
+        const req = await getRequest(requestId);
+        networkRetries = 0;
+        if (req.status === "running" || req.status === "queued") {
+          useBoardStore.getState().updateNodeData(rfId, { status: req.status });
+          const t = setTimeout(poll, 1500);
+          set((s) => ({
+            active: { ...s.active, [rfId]: { requestId, timerId: t } },
+          }));
+          return;
+        }
+        if (req.status === "done") {
+          const result = req.result as {
+            shots?: Array<{
+              idx: number;
+              prompt: string;
+              parentShotIdx: number | null;
+              mediaId?: string | null;
+              status: string;
+              error?: string | null;
+            }>;
+            node_status?: string;
+            media_ids?: (string | null)[];
+          };
+          const shots = (result.shots ?? []).map((s) => ({
+            idx: s.idx,
+            prompt: s.prompt,
+            parentShotIdx: s.parentShotIdx ?? null,
+            mediaId: s.mediaId ?? undefined,
+            status: s.status as
+              | "idle" | "queued" | "running" | "done" | "error" | "blocked",
+            error: s.error ?? undefined,
+          }));
+          const mediaIds = (result.media_ids ?? []) as (string | null)[];
+          const nodeStatus = (result.node_status as
+            | "idle" | "queued" | "running" | "done" | "error" | "partial"
+            | undefined) ?? "done";
+          const firstMid = mediaIds.find(
+            (m): m is string => typeof m === "string" && m.length > 0,
+          );
+          useBoardStore.getState().updateNodeData(rfId, {
+            status: nodeStatus,
+            shots,
+            shotCount: shots.length,
+            mediaIds,
+            mediaId: firstMid,
+            aspectRatio,
+            renderedAt: new Date().toISOString(),
+          });
+          const dbId = parseInt(rfId, 10);
+          if (!isNaN(dbId)) {
+            patchNode(dbId, {
+              status: nodeStatus,
+              data: {
+                shots,
+                shotCount: shots.length,
+                narrativeSeed: opts.narrativeSeed,
+                mediaIds,
+                aspectRatio,
+                renderedAt: new Date().toISOString(),
+                globalRefMediaIds: refMediaIds,
+              },
+            }).catch(() => {});
+          }
+          set((s) => {
+            const next = { ...s.active };
+            delete next[rfId];
+            return { active: next };
+          });
+          return;
+        }
+        // failed
+        const errMsg = humanizeErrorMessage(req.error ?? "storyboard generation failed");
+        useBoardStore.getState().updateNodeData(rfId, {
+          status: "error",
+          error: errMsg,
+        });
+        set((s) => {
+          const next = { ...s.active };
+          delete next[rfId];
+          return { active: next, error: errMsg };
+        });
+      } catch (err) {
+        networkRetries += 1;
+        if (networkRetries >= MAX_NETWORK_RETRIES) {
+          const msg = err instanceof Error ? err.message : "network error";
+          useBoardStore.getState().updateNodeData(rfId, {
+            status: "error",
+            error: msg,
+          });
+          set((s) => {
+            const next = { ...s.active };
+            delete next[rfId];
+            return { active: next, error: msg };
+          });
+          return;
+        }
+        const t = setTimeout(poll, 1500);
+        set((s) => ({
+          active: { ...s.active, [rfId]: { requestId, timerId: t } },
+        }));
+      }
+    };
+
+    set((s) => ({
+      active: { ...s.active, [rfId]: { requestId, timerId: null } },
+    }));
+    setTimeout(poll, 800);
+  },
+
+  async retryStoryboardShot(rfId, shotIdx) {
+    const node = useBoardStore.getState().nodes.find((n) => n.id === rfId);
+    if (!node || !Array.isArray(node.data.shots)) {
+      set({ error: "node has no shots" });
+      return;
+    }
+    const projectId = await get().ensureProjectId();
+    if (projectId === null) return;
+    const knownTier = get().paygateTier;
+    if (!knownTier) {
+      set({ error: "tier unknown — open Flow first" });
+      return;
+    }
+    const nodeDbId = parseInt(rfId, 10);
+
+    // Optimistic per-shot status flip.
+    const existingShots = node.data.shots as StoryboardShot[];
+    const newShots = existingShots.map((s) =>
+      s.idx === shotIdx
+        ? { ...s, status: "queued" as const, error: undefined }
+        : s,
+    );
+    useBoardStore.getState().updateNodeData(rfId, { shots: newShots });
+
+    let reqDto;
+    try {
+      // Refs are live — collect at retry time, not from a snapshot. If
+      // the user re-wired upstream edges since the original gen, the
+      // retry uses the new pool. Without this the retry runs ref-less
+      // and identity drifts (the whole reason for the storyboard).
+      const refMediaIds = collectUpstreamRefMediaIds(rfId);
+      reqDto = await createRequest({
+        type: "retry_storyboard_shot",
+        node_id: isNaN(nodeDbId) ? undefined : nodeDbId,
+        params: {
+          shot_idx: shotIdx,
+          project_id: projectId,
+          paygate_tier: knownTier,
+          aspect_ratio:
+            (node.data.aspectRatio as string | undefined) ??
+            "IMAGE_ASPECT_RATIO_LANDSCAPE",
+          image_model: useSettingsStore.getState().imageModel,
+          ref_media_ids: refMediaIds,
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "retry failed";
+      useBoardStore.getState().updateNodeData(rfId, {
+        shots: existingShots.map((s) =>
+          s.idx === shotIdx ? { ...s, status: "error", error: msg } : s,
+        ),
+      });
+      set({ error: msg });
+      return;
+    }
+
+    const requestId = reqDto.id;
+    // Register in the active poll registry so cancelGeneration(rfId)
+    // (called on node deletion) actually stops the retry poll.
+    set((s) => ({
+      active: { ...s.active, [rfId]: { requestId, timerId: null } },
+    }));
+
+    const poll = async () => {
+      // Implicit cancel: if the node was deleted, the active entry is gone.
+      if (get().active[rfId] === undefined) return;
+      try {
+        const req = await getRequest(requestId);
+        if (req.status === "running" || req.status === "queued") {
+          const t = setTimeout(poll, 1500);
+          set((s) => ({
+            active: { ...s.active, [rfId]: { requestId, timerId: t } },
+          }));
+          return;
+        }
+        if (req.status === "done") {
+          const newMid = (req.result["media_id"] as string | null | undefined) ?? null;
+          const current = useBoardStore
+            .getState()
+            .nodes.find((n) => n.id === rfId);
+          const baseShots = Array.isArray(current?.data.shots)
+            ? (current.data.shots as StoryboardShot[])
+            : newShots;
+          const updated = baseShots.map((s) =>
+            s.idx === shotIdx
+              ? {
+                  ...s,
+                  status: (newMid ? "done" : "error") as
+                    | "done" | "error",
+                  mediaId: newMid ?? undefined,
+                  error: newMid ? undefined : "missing_media",
+                }
+              : s,
+          );
+          // Aggregate node-level status from all shots. "partial" is
+          // reserved for the genuine mixed-success-and-failure case;
+          // when other shots are still queued/running the node is
+          // still "running" overall.
+          const hasInProgress = updated.some(
+            (s) => s.status === "queued" || s.status === "running",
+          );
+          const aggregate: NodeStatus =
+            hasInProgress
+              ? "running"
+              : updated.every((s) => s.status === "done")
+                ? "done"
+                : updated.some((s) => s.status === "done")
+                  ? "partial"
+                  : "error";
+          useBoardStore.getState().updateNodeData(rfId, {
+            shots: updated,
+            mediaIds: updated.map((s) => s.mediaId ?? null),
+            status: aggregate,
+          });
+          const dbId = parseInt(rfId, 10);
+          if (!isNaN(dbId)) {
+            patchNode(dbId, {
+              status: aggregate,
+              data: {
+                shots: updated,
+                mediaIds: updated.map((s) => s.mediaId ?? null),
+              },
+            }).catch(() => {});
+          }
+          set((s) => {
+            const next = { ...s.active };
+            delete next[rfId];
+            return { active: next };
+          });
+          return;
+        }
+        // failed
+        const errMsg = humanizeErrorMessage(req.error ?? "retry failed");
+        const current = useBoardStore
+          .getState()
+          .nodes.find((n) => n.id === rfId);
+        const currentShots = Array.isArray(current?.data.shots)
+          ? (current.data.shots as StoryboardShot[])
+          : [];
+        useBoardStore.getState().updateNodeData(rfId, {
+          shots: currentShots.map((s) =>
+            s.idx === shotIdx ? { ...s, status: "error", error: errMsg } : s,
+          ),
+        });
+        set((s) => {
+          const next = { ...s.active };
+          delete next[rfId];
+          return { active: next, error: errMsg };
+        });
+      } catch {
+        const t = setTimeout(poll, 1500);
+        set((s) => ({
+          active: { ...s.active, [rfId]: { requestId, timerId: t } },
+        }));
       }
     };
     setTimeout(poll, 800);

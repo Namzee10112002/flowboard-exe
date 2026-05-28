@@ -6,6 +6,72 @@
  */
 const SITE_KEY = '6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV';
 
+function emitBearer(value, source) {
+  const match = /^Bearer\s+(.+)/i.exec(String(value || ''));
+  const token = match?.[1]?.trim();
+  if (!token) return;
+  window.dispatchEvent(new CustomEvent('FLOWBOARD_BEARER_TOKEN', {
+    detail: { token, source },
+  }));
+}
+
+function inspectHeaders(headers, source) {
+  if (!headers) return;
+  try {
+    if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+      const auth = headers.get('authorization');
+      if (auth) emitBearer(auth, source);
+      return;
+    }
+  } catch {}
+  if (Array.isArray(headers)) {
+    for (const pair of headers) {
+      if (Array.isArray(pair) && String(pair[0] || '').toLowerCase() === 'authorization') {
+        emitBearer(pair[1], source);
+      }
+    }
+    return;
+  }
+  if (typeof headers === 'object') {
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === 'authorization') emitBearer(value, source);
+    }
+  }
+}
+
+function installAuthCaptureHooks() {
+  if (window.__flowboardAuthHooksInstalled) return;
+  window.__flowboardAuthHooksInstalled = true;
+
+  const originalFetch = window.fetch;
+  if (typeof originalFetch === 'function') {
+    window.fetch = function flowboardFetch(input, init) {
+      try {
+        inspectHeaders(init?.headers, 'fetch.init');
+        if (typeof Request !== 'undefined' && input instanceof Request) {
+          inspectHeaders(input.headers, 'fetch.request');
+        }
+      } catch {}
+      return originalFetch.apply(this, arguments);
+    };
+  }
+
+  const xhrProto = window.XMLHttpRequest?.prototype;
+  if (xhrProto?.setRequestHeader) {
+    const originalSetRequestHeader = xhrProto.setRequestHeader;
+    xhrProto.setRequestHeader = function flowboardSetRequestHeader(name, value) {
+      try {
+        if (String(name || '').toLowerCase() === 'authorization') {
+          emitBearer(value, 'xhr');
+        }
+      } catch {}
+      return originalSetRequestHeader.apply(this, arguments);
+    };
+  }
+}
+
+installAuthCaptureHooks();
+
 window.addEventListener('GET_CAPTCHA', async ({ detail }) => {
   const { requestId, pageAction } = detail;
   try {

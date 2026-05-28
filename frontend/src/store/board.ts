@@ -17,7 +17,7 @@ import {
 
 export type { NodeType };
 
-export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
+export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
 // Storyboard grid options.
 //   2x2 → 4 panels (square)

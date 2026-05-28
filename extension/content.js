@@ -9,6 +9,18 @@
   (document.head || document.documentElement).appendChild(s);
 })();
 
+window.addEventListener('FLOWBOARD_BEARER_TOKEN', (e) => {
+  const token = e.detail?.token;
+  if (typeof token !== 'string' || !token) return;
+  chrome.runtime.sendMessage({
+    type: 'PAGE_TOKEN_CAPTURED',
+    token,
+    source: e.detail?.source || 'page',
+  }).catch(() => {});
+});
+
+chrome.runtime.sendMessage({ type: 'CONTENT_READY' }).catch(() => {});
+
 chrome.runtime.onMessage.addListener((msg, _, reply) => {
   if (msg.type !== 'GET_CAPTCHA') return;
 

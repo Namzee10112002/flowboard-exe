@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -16,43 +17,37 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 // Returns null when the token is unrecognised, so the caller falls through to
 // the raw message.
 function humanizeBackendError(token: string): string | null {
-  const t = token.toLowerCase();
-  if (t === "paygate_tier_unknown") {
-    return (
-      "Flowboard doesn't know your Google Flow plan tier yet — the "
-      + "extension hasn't seen a Flow request that exposes it. Open "
-      + "https://labs.google/fx/tools/flow in a tab and reload it once, "
-      + "then retry. Flowboard refuses to dispatch in this state to "
-      + "avoid silently serving Ultra users at the Pro checkpoint."
-    );
+  const tokenLower = token.toLowerCase();
+  if (tokenLower.includes("not inside a trusted directory")) {
+    return t("errorCodexTrustedDirectory");
   }
-  if (t === "no_media_id_in_upload_response") {
-    return (
-      "Google Flow accepted the upload but didn't return a media handle — "
-      + "this usually means the image was silently rejected by Flow's "
-      + "content filter (logos, watermarks, copyrighted brand imagery). "
-      + "Try a different image or download it locally and upload as a file. "
-      + "Check the agent terminal for the full Flow response."
-    );
+  if (tokenLower === "paygate_tier_unknown") {
+    return t("errorPaygateTierUnknown");
   }
-  if (t.includes("captcha_failed: no current window")) {
-    return (
-      "Chrome has no open windows for the extension to attach a Flow tab to. "
-      + "Open any Chrome window (or click the extension's '⋯ → Open Flow') "
-      + "and retry — Flowboard will reuse the existing window automatically."
-    );
+  if (tokenLower === "no_media_id_in_upload_response") {
+    return t("errorNoMediaIdUpload");
   }
-  if (t.startsWith("captcha_failed:")) {
+  if (tokenLower.includes("captcha_failed: no current window")) {
+    return t("errorCaptchaNoWindow");
+  }
+  if (tokenLower === "extension_disconnected") {
+    return t("errorExtensionDisconnected");
+  }
+  if (tokenLower.startsWith("captcha_failed:")) {
     // CAPTCHA failures are rarely the user's fault — surface the underlying
     // reason verbatim but keep the prefix so power-users can grep for it.
     return token;
   }
-  if (t.startsWith("public_error_")) {
+  if (tokenLower.startsWith("public_error_")) {
     // Veo / Imagen content filters are returned verbatim by Flow — these
     // are already self-describing, just prettify the prefix.
-    return token.replace(/^PUBLIC_ERROR_/i, "Flow rejected: ").replace(/_/g, " ");
+    return `${t("errorFlowRejectedPrefix")} ${token.replace(/^PUBLIC_ERROR_/i, "").replace(/_/g, " ")}`.trim();
   }
   return null;
+}
+
+export function humanizeErrorMessage(message: string): string {
+  return humanizeBackendError(message) ?? message;
 }
 
 async function extractErrorMessage(res: Response): Promise<string> {
@@ -100,6 +95,20 @@ export interface WsStats {
 
 export interface HealthResponse {
   ok: boolean;
+  app_version?: string;
+  build?: {
+    version?: string;
+    built_at?: string;
+    release_repo?: string;
+    codex_git_repo_check_skipped?: boolean;
+  };
+  update_status?: {
+    status?: string;
+    tag?: string;
+    asset?: string;
+    updated_at?: string;
+    message?: string;
+  } | null;
   extension_connected: boolean;
   ws_stats?: WsStats;
 }
@@ -108,10 +117,34 @@ export function getHealth() {
   return api<HealthResponse>("/api/health");
 }
 
+export interface LicenseStatus {
+  required: boolean;
+  licensed: boolean;
+  hwid: string;
+  status: string;
+  message: string;
+  expiry: string | null;
+  keyMasked: string | null;
+  checkedAt: string | null;
+  source: string;
+  offlineGraceUntil: string | null;
+}
+
+export function getLicenseStatus(): Promise<LicenseStatus> {
+  return api<LicenseStatus>("/api/license/status");
+}
+
+export function activateLicense(key: string): Promise<LicenseStatus> {
+  return api<LicenseStatus>("/api/license/activate", {
+    method: "POST",
+    body: JSON.stringify({ key }),
+  });
+}
+
 // ── DTOs ────────────────────────────────────────────────────────────────────
 
 export type NodeType = "character" | "image" | "video" | "prompt" | "note" | "visual_asset" | "Storyboard";
-export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
+export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
 export interface Board {
   id: number;
@@ -340,6 +373,431 @@ export interface RequestDTO {
   finished_at: string | null;
 }
 
+// Auto Flow scenario planner.
+export type ScenarioStatus = "draft" | "planned" | "running" | "partial" | "done" | "failed";
+export type ScenarioSceneStatus =
+  | "background_queued"
+  | "background_running"
+  | "planned"
+  | "background_done"
+  | "image_done"
+  | "video_done"
+  | "voice_done"
+  | "error";
+
+export interface ScenarioRefs {
+  background_media_ids: string[];
+  character_media_ids: string[];
+  visual_asset_media_ids: string[];
+}
+
+export type VideoAudioMode =
+  | "silent"
+  | "veo_dialogue"
+  | "veo_dialogue_elevenlabs_replace";
+
+export type ScenarioGenerationStage =
+  | "empty"
+  | "needs_background"
+  | "needs_scene_image"
+  | "needs_video"
+  | "video_done"
+  | "error";
+
+export interface ScenarioGenerationSummary {
+  scene_count: number;
+  background_done: number;
+  image_done: number;
+  video_done: number;
+  voice_done: number;
+  error_count: number;
+  stage: ScenarioGenerationStage;
+}
+
+export interface ScenarioDTO {
+  id: number;
+  board_id: number;
+  node_id: number | null;
+  theme: string;
+  extra_description: string;
+  content_style: string;
+  scene_count: number;
+  video_audio_mode: VideoAudioMode;
+  voice_id: string | null;
+  final_video_media_id: string | null;
+  status: ScenarioStatus;
+  refs: Partial<ScenarioRefs>;
+  generation_summary?: ScenarioGenerationSummary;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScenarioSceneDTO {
+  id: number;
+  scenario_id: number;
+  idx: number;
+  title: string;
+  background_description: string;
+  background_image_prompt: string;
+  composition_prompt: string;
+  motion_prompt: string;
+  voice_script: string;
+  voice_direction: string;
+  duration_seconds: number;
+  status: ScenarioSceneStatus;
+  refs: Partial<ScenarioRefs>;
+  background_media_id: string | null;
+  image_media_id: string | null;
+  video_media_id: string | null;
+  voice_media_id: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScenarioPlanInput {
+  theme: string;
+  extra_description?: string;
+  scene_count: number;
+  content_style?: string;
+  video_audio_mode?: VideoAudioMode;
+  voice_id?: string | null;
+  refs?: Partial<ScenarioRefs>;
+  node_id?: number | null;
+}
+
+export interface ScenarioPlanResponse {
+  scenario: ScenarioDTO;
+  scenes: ScenarioSceneDTO[];
+}
+
+export interface ScenarioExportResponse {
+  media_id: string;
+  scenario: ScenarioDTO;
+  export_dir: string;
+  file_path: string;
+}
+
+export interface ScenarioExportSelectedResponse {
+  export_dir: string;
+  exported: Array<{
+    scenario_id: number;
+    media_id: string;
+    export_dir: string;
+    file_path: string;
+    scenario: ScenarioDTO;
+  }>;
+  failed: Array<{ scenario_id: number; error: string }>;
+}
+
+export interface ScenarioPatchInput {
+  video_audio_mode?: VideoAudioMode;
+  voice_id?: string | null;
+}
+
+export interface ScenarioPatchResponse {
+  scenario: ScenarioDTO;
+}
+
+export interface ScenarioScenePatchInput {
+  title?: string;
+  background_description?: string;
+  background_image_prompt?: string;
+  composition_prompt?: string;
+  motion_prompt?: string;
+  voice_script?: string;
+  voice_direction?: string;
+  duration_seconds?: number;
+  status?: ScenarioSceneStatus;
+  error?: string | null;
+  background_media_id?: string | null;
+  image_media_id?: string | null;
+  video_media_id?: string | null;
+  voice_media_id?: string | null;
+}
+
+export type BatchScanInputType = "auto" | "images" | "videos";
+
+export interface BatchScanItem {
+  name: string;
+  path: string;
+  kind: "image" | "video" | "unsupported";
+  accepted: boolean;
+  reason?: string;
+  size_bytes?: number;
+}
+
+export interface BatchScanResponse {
+  folder_path: string;
+  input_type: BatchScanInputType;
+  items: BatchScanItem[];
+  summary: {
+    accepted: number;
+    images: number;
+    videos: number;
+    rejected: number;
+    total: number;
+  };
+}
+
+export interface BatchCreateScenarioInputItem {
+  path: string;
+  kind: "image" | "video";
+}
+
+export interface BatchCreateScenarioResponse {
+  created: ScenarioDTO[];
+  count: number;
+}
+
+export interface BatchAnalyzeImagesResponse {
+  saved: Array<{ scenario_id: number; scene_count: number }>;
+  failed: Array<{ scenario_id: number; error: string }>;
+}
+
+export interface BatchAnalyzeVideosResponse {
+  saved: Array<{ scenario_id: number; scene_count: number }>;
+  failed: Array<{ scenario_id: number; error: string }>;
+}
+
+export async function planScenario(
+  boardId: number,
+  input: ScenarioPlanInput,
+): Promise<ScenarioPlanResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ScenarioPlanResponse>;
+}
+
+export function listScenarios(boardId: number): Promise<ScenarioDTO[]> {
+  return api<ScenarioDTO[]>(`/api/boards/${boardId}/scenarios`);
+}
+
+export function getScenario(
+  boardId: number,
+  scenarioId: number,
+): Promise<ScenarioPlanResponse> {
+  return api<ScenarioPlanResponse>(`/api/boards/${boardId}/scenarios/${scenarioId}`);
+}
+
+export async function deleteScenario(
+  boardId: number,
+  scenarioId: number,
+): Promise<void> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/${scenarioId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+}
+
+export async function exportScenario(
+  boardId: number,
+  scenarioId: number,
+  voiceId?: string,
+): Promise<ScenarioExportResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/${scenarioId}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(voiceId ? { voice_id: voiceId } : {}),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ScenarioExportResponse>;
+}
+
+export async function exportSelectedScenarios(
+  boardId: number,
+  scenarioIds: number[],
+  voiceId?: string,
+): Promise<ScenarioExportSelectedResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/export-selected`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scenario_ids: scenarioIds,
+      ...(voiceId ? { voice_id: voiceId } : {}),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ScenarioExportSelectedResponse>;
+}
+
+export async function patchScenario(
+  boardId: number,
+  scenarioId: number,
+  patch: ScenarioPatchInput,
+): Promise<ScenarioPatchResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/${scenarioId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ScenarioPatchResponse>;
+}
+
+export async function patchScenarioScene(
+  boardId: number,
+  scenarioId: number,
+  sceneId: number,
+  patch: ScenarioScenePatchInput,
+): Promise<ScenarioSceneDTO> {
+  const res = await fetch(
+    `/api/boards/${boardId}/scenarios/${scenarioId}/scenes/${sceneId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ScenarioSceneDTO>;
+}
+
+export async function scanScenarioBatchFolder(
+  boardId: number,
+  input: { folder_path: string; input_type: BatchScanInputType },
+): Promise<BatchScanResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/batch-scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<BatchScanResponse>;
+}
+
+export async function createScenarioBatchRecords(
+  boardId: number,
+  input: {
+    scene_count: number;
+    voice_id?: string;
+    video_audio_mode: VideoAudioMode;
+    items: BatchCreateScenarioInputItem[];
+  },
+): Promise<BatchCreateScenarioResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/batch-create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<BatchCreateScenarioResponse>;
+}
+
+export async function analyzeBatchImageScenarios(
+  boardId: number,
+  input: { scenario_ids: number[] },
+): Promise<BatchAnalyzeImagesResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/batch-analyze-images`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<BatchAnalyzeImagesResponse>;
+}
+
+export async function analyzeBatchVideoScenarios(
+  boardId: number,
+  input: { scenario_ids: number[] },
+): Promise<BatchAnalyzeVideosResponse> {
+  const res = await fetch(`/api/boards/${boardId}/scenarios/batch-analyze-videos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<BatchAnalyzeVideosResponse>;
+}
+
+export interface ElevenLabsVoice {
+  voice_id: string;
+  name: string;
+  category?: string | null;
+  description?: string | null;
+  preview_url?: string | null;
+  labels: Record<string, string>;
+}
+
+export interface ElevenLabsVoicesResponse {
+  voices: ElevenLabsVoice[];
+  has_more: boolean;
+  next_page_token: string | null;
+}
+
+export interface ElevenLabsSpeechResponse {
+  media_id: string;
+  mime: string;
+  size: number;
+  voice_id: string;
+  model_id: string;
+}
+
+export interface ElevenLabsStatus {
+  configured: boolean;
+  source: "env" | "local" | "missing";
+}
+
+export function getElevenLabsStatus(): Promise<ElevenLabsStatus> {
+  return api<ElevenLabsStatus>("/api/elevenlabs/status");
+}
+
+export async function setElevenLabsKey(apiKey: string | null): Promise<ElevenLabsStatus> {
+  const res = await fetch("/api/elevenlabs/key", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json() as Promise<ElevenLabsStatus>;
+}
+
+export function listElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
+  return api<ElevenLabsVoicesResponse>("/api/elevenlabs/voices");
+}
+
+export async function generateElevenLabsSpeech(input: {
+  voice_id: string;
+  text: string;
+  model_id?: string;
+  output_format?: string;
+  voice_settings?: Record<string, unknown>;
+}): Promise<ElevenLabsSpeechResponse> {
+  const res = await fetch("/api/elevenlabs/text-to-speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ElevenLabsSpeechResponse>;
+}
+
 export function ensureBoardProject(boardId: number) {
   return api<BoardProject>(`/api/boards/${boardId}/project`, { method: "POST" });
 }
@@ -392,6 +850,7 @@ export interface AuthScanResult {
   // agent. False means the user must install / enable / open Chrome.
   extension_connected: boolean;
   has_user_info: boolean;
+  has_flow_token: boolean;
   has_paygate_tier: boolean;
   // True when the agent had to ask the extension to re-fetch userinfo
   // (i.e. WS open but cache empty). Backend sets this only in that
@@ -667,6 +1126,162 @@ export async function testLlmProvider(
     return { ok: false, error: `HTTP ${res.status}` };
   }
   return res.json();
+}
+
+export interface CodexBootstrapStatus {
+  npm_present: boolean;
+  npm_path: string | null;
+  npm_version: string | null;
+  bundled_node_present: boolean;
+  codex_present: boolean;
+  codex_path: string | null;
+  codex_version: string | null;
+  codex_install_dir: string;
+  node_install_dir: string;
+}
+
+export interface CodexBootstrapResult {
+  ok: boolean;
+  changed: boolean;
+  node_downloaded?: boolean;
+  status: CodexBootstrapStatus;
+}
+
+export async function bootstrapCodexCli(): Promise<CodexBootstrapResult> {
+  const res = await fetch("/api/llm/providers/openai/codex-bootstrap", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<CodexBootstrapResult>;
+}
+
+export interface FlowAccountDTO {
+  id: number;
+  label: string;
+  provider: string;
+  email?: string | null;
+  status: "active" | "paused" | "disabled" | "unhealthy";
+  priority_weight: number;
+  credential_configured?: boolean;
+  chrome_user_data_dir?: string | null;
+  paygate_tier?: string | null;
+  credits?: string | null;
+  cooldown_until?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FlowAccountTestResult {
+  ok: boolean;
+  message: string;
+  account: FlowAccountDTO;
+}
+
+export function listFlowAccounts(): Promise<FlowAccountDTO[]> {
+  return api<FlowAccountDTO[]>("/api/accounts");
+}
+
+export function createFlowAccount(input: {
+  label: string;
+  provider?: string;
+  priority_weight?: number;
+}): Promise<{ account: FlowAccountDTO }> {
+  return api<{ account: FlowAccountDTO }>("/api/accounts", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function patchFlowAccount(
+  accountId: number,
+  patch: {
+    label?: string;
+    status?: "active" | "paused" | "disabled" | "unhealthy";
+    priority_weight?: number;
+    credential?: string;
+    paygate_tier?: string | null;
+    credits?: string | null;
+  },
+): Promise<{ account: FlowAccountDTO }> {
+  return api<{ account: FlowAccountDTO }>(`/api/accounts/${accountId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function testFlowAccount(accountId: number): Promise<FlowAccountTestResult> {
+  return api<FlowAccountTestResult>(`/api/accounts/${accountId}/test`, {
+    method: "POST",
+  });
+}
+
+export function resetFlowAccountCooldown(accountId: number): Promise<{ account: FlowAccountDTO }> {
+  return api<{ account: FlowAccountDTO }>(`/api/accounts/${accountId}/cooldown/reset`, {
+    method: "POST",
+  });
+}
+
+export async function captureFlowAccountCredential(accountId: number): Promise<{ account: FlowAccountDTO; captured: boolean; tier_refreshed?: boolean }> {
+  const res = await fetch(`/api/accounts/${accountId}/capture-credential`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<{ account: FlowAccountDTO; captured: boolean; tier_refreshed?: boolean }>;
+}
+
+export async function openFlowAccountProfile(accountId: number): Promise<{
+  ok: true;
+  account: FlowAccountDTO;
+  launch: {
+    pid: number;
+    browser_path: string;
+    profile_dir: string;
+    extension_dir?: string | null;
+    bridge?: "cdp" | "extension" | string;
+    cdp_port?: number;
+    cdp_url?: string;
+    url: string;
+  };
+}> {
+  const res = await fetch(`/api/accounts/${accountId}/open-profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<{
+    ok: true;
+    account: FlowAccountDTO;
+    launch: {
+      pid: number;
+      browser_path: string;
+      profile_dir: string;
+      extension_dir?: string | null;
+      bridge?: "cdp" | "extension" | string;
+      cdp_port?: number;
+      cdp_url?: string;
+      url: string;
+    };
+  }>;
+}
+
+export function disableFlowAccount(accountId: number): Promise<{ ok: true }> {
+  return api<{ ok: true }>(`/api/accounts/${accountId}`, {
+    method: "DELETE",
+  });
+}
+
+export function hardDeleteFlowAccount(accountId: number): Promise<{ ok: true }> {
+  return api<{ ok: true }>(`/api/accounts/${accountId}/hard`, {
+    method: "DELETE",
+  });
 }
 
 

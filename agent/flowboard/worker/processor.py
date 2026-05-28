@@ -18,6 +18,7 @@ from flowboard.db import get_session
 from flowboard.db.models import Request
 from flowboard.services import media as media_service
 from flowboard.services.flow_client import flow_client
+from flowboard.services.accounts_dispatcher import mark_dispatch_outcome, pick_account_for_request
 from flowboard.services.flow_sdk import get_flow_sdk
 
 logger = logging.getLogger(__name__)
@@ -729,10 +730,19 @@ class WorkerController:
                     s.commit()
                     return
 
+                if req.account_id is None:
+                    req.account_id = pick_account_for_request(rid, reason=f"request_type:{req.type}")
+                req.dispatch_attempts = int(req.dispatch_attempts or 0) + 1
+                attempt_no = req.dispatch_attempts
                 req.status = "running"
                 s.add(req)
                 s.commit()
                 params = dict(req.params or {})
+                if req.account_id is not None:
+                    params["__account_id"] = req.account_id
+                    flow_client.set_active_account(req.account_id)
+                else:
+                    flow_client.set_active_account(None)
                 # Enrich with the request's node_id so handlers that need
                 # to look up Node.data don't depend on the caller copying
                 # it into params explicitly. Underscore prefix avoids
@@ -767,9 +777,25 @@ class WorkerController:
                     # can render "TIMEOUT" instead of a generic failure.
                     req.status = "timeout" if err == "timeout_waiting_video" else "failed"
                     req.error = err
+                    mark_dispatch_outcome(
+                        rid,
+                        req.account_id,
+                        int(req.dispatch_attempts or 1),
+                        outcome="failed",
+                        reason="handler_error",
+                        error_code="handler_error",
+                    )
                 else:
                     req.status = "done"
                     req.error = None
+                    mark_dispatch_outcome(
+                        rid,
+                        req.account_id,
+                        int(req.dispatch_attempts or 1),
+                        outcome="done",
+                        reason="handler_success",
+                        error_code=None,
+                    )
                 s.add(req)
                 s.commit()
         except Exception as exc:  # noqa: BLE001

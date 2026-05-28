@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { AiProvidersSection } from "./settings/AiProvidersSection";
+import { VoiceApiSection } from "./settings/VoiceApiSection";
 
 /**
  * Standalone dialog for the AI Providers panel.
@@ -56,7 +57,7 @@ export function AiProviderDialog({ open, onClose, force = false }: AiProviderDia
       >
         <div className="ai-provider-dialog__header">
           <span className="ai-provider-dialog__title">
-            {force ? "Set up your AI provider" : "AI Providers"}
+            {force ? "Set up Flowboard" : "AI Providers"}
           </span>
           {!force && (
             <button
@@ -71,12 +72,12 @@ export function AiProviderDialog({ open, onClose, force = false }: AiProviderDia
         </div>
         {force && (
           <div className="ai-provider-dialog__force-banner" role="alert">
-            Flowboard needs an AI provider before it can run Auto-Prompt,
-            Vision, or Planner. Pick one card, run all 3 tests green, then
-            Apply to continue.
+            Flowboard needs an AI provider and a voice API key before first use.
+            Pick one AI card, test it, apply it, then save your ElevenLabs key.
           </div>
         )}
         <AiProvidersSection />
+        <VoiceApiSection force={force} />
       </div>
     </div>
   );

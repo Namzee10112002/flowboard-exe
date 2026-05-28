@@ -12,11 +12,11 @@ deliberate Windows-compat choice — asyncio subprocess on Windows requires
 ``ProactorEventLoop`` which FastAPI doesn't use). Tests stub
 ``subprocess.run`` at the module boundary. Stdin-based prompt delivery
 (see test_run_text_via_cli) sidesteps the cmd.exe argv re-parser that
-mangles long prompts on ``.cmd``-shimmed npm installs.
+mangles long prompts on ``.cmd``-shimmed npm installs. Current Codex CLI
+uses positional ``-`` for stdin; ``-p`` is the config profile flag.
 """
 from __future__ import annotations
 
-import subprocess as _subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -84,7 +84,7 @@ def _route_probe(version_rc: int = 0, help_image_flag: Optional[str] = "--image"
     help_text = (
         f"  {help_image_flag} PATH\n".encode()
         if help_image_flag
-        else b"  -p PROMPT\n  --json\n"
+        else b"  -p, --profile <CONFIG_PROFILE>\n  --json\n"
     )
 
     def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
@@ -250,15 +250,23 @@ async def test_mode_returns_none_when_nothing_configured(tmp_secrets_path, monke
 # ── run — CLI dispatch ────────────────────────────────────────────────
 
 
-def _route_dispatch(envelope_stdout: bytes, *, image_flag: Optional[str] = "--image"):
+def _route_dispatch(
+    last_message: Optional[str],
+    *,
+    image_flag: Optional[str] = "--image",
+):
     """Probe + dispatch in one dispatcher: --version/--help return probe
-    fixtures, anything else returns the supplied envelope."""
+    fixtures, anything else writes the supplied final message."""
     probe = _route_probe(help_image_flag=image_flag)
 
     def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
         if "--version" in argv or "--help" in argv:
             return probe(argv, kwargs)
-        return _FakeResult(returncode=0, stdout=envelope_stdout)
+        if last_message is not None:
+            output_idx = argv.index("--output-last-message")
+            output_path = Path(argv[output_idx + 1])
+            output_path.write_text(last_message, encoding="utf-8")
+        return _FakeResult(returncode=0, stdout=b"")
 
     return dispatcher
 
@@ -268,14 +276,14 @@ async def test_run_text_via_cli_when_codex_available(
     tmp_secrets_path, monkeypatch
 ):
     """Critical Windows fix: prompt is delivered via stdin (kwargs['input'])
-    rather than ``-p <prompt>`` argv. Same ``.cmd`` shim rationale as
+    rather than an argv token. Same ``.cmd`` shim rationale as
     claude_cli — cmd.exe re-parses argv for ``.cmd`` shims and mangles
-    long prompts. ``-p -`` argv signals stdin to codex."""
+    long prompts. Positional ``-`` argv signals stdin to codex."""
     p = OpenAIProvider()
     _stub_resolve(monkeypatch)
     state = _stub_run(
         monkeypatch,
-        _route_dispatch(b'{"result": "hello text"}\n'),
+        _route_dispatch("hello text"),
     )
     out = await p.run("hi", system_prompt="be terse")
     assert out == "hello text"
@@ -287,11 +295,17 @@ async def test_run_text_via_cli_when_codex_available(
     assert len(dispatch_calls) == 1
     argv, kwargs = dispatch_calls[0]
     assert "exec" in argv
-    assert "-p" in argv and "-" in argv
+    assert "-p" not in argv
+    assert "--output-schema" not in argv
+    assert "--skip-git-repo-check" in argv
+    assert "--output-last-message" in argv
+    assert argv[-1] == "-"
     # Prompt is on stdin, not in argv.
-    assert kwargs["input"] == b"hi"
+    stdin_text = kwargs["input"].decode("utf-8")
+    assert "[System]\nbe terse" in stdin_text
+    assert "[User]\nhi" in stdin_text
     assert "hi" not in argv
-    assert "--system" in argv
+    assert "--system" not in argv
 
 
 @pytest.mark.asyncio
@@ -308,15 +322,21 @@ async def test_run_vision_via_cli_when_image_flag_resolved(
     _stub_resolve(monkeypatch)
     state = _stub_run(
         monkeypatch,
-        _route_dispatch(b'{"result": "described"}\n', image_flag="--image"),
+        _route_dispatch("described", image_flag="--image"),
     )
     # Stub httpx to assert it's never called.
     httpx_called = {"n": 0}
 
     class _ShouldNotBeUsed:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): httpx_called["n"] += 1; return self
-        async def __aexit__(self, *a): return None
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            httpx_called["n"] += 1
+            return self
+
+        async def __aexit__(self, *a):
+            return None
 
     monkeypatch.setattr(httpx, "AsyncClient", _ShouldNotBeUsed)
     out = await p.run("describe", attachments=[str(img)])
@@ -394,7 +414,7 @@ async def test_run_text_via_codex_text_only_works(
     _stub_resolve(monkeypatch)
     _stub_run(
         monkeypatch,
-        _route_dispatch(b'{"result": "text answer"}\n', image_flag=None),
+        _route_dispatch("text answer", image_flag=None),
     )
     out = await p.run("hi")
     assert out == "text answer"
@@ -428,35 +448,33 @@ async def test_run_raises_when_neither_cli_nor_key(tmp_secrets_path, monkeypatch
         await p.run("hi")
 
 
-# ── CLI envelope error handling ───────────────────────────────────────
+# ── CLI output handling ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_cli_envelope_error_field_raises(tmp_secrets_path, monkeypatch):
+async def test_cli_success_without_output_raises(tmp_secrets_path, monkeypatch):
     p = OpenAIProvider()
     _stub_resolve(monkeypatch)
     _stub_run(
         monkeypatch,
-        _route_dispatch(b'{"is_error": true, "error": "auth required"}\n'),
+        _route_dispatch(None),
     )
-    with pytest.raises(LLMError, match="codex CLI reported error"):
+    with pytest.raises(LLMError, match="produced no output"):
         await p.run("hi")
 
 
 @pytest.mark.asyncio
-async def test_cli_envelope_accepts_alternate_field_names(
+async def test_cli_reads_last_message_file(
     tmp_secrets_path, monkeypatch
 ):
-    """Codex CLI's output field name has shifted between versions — accept
-    `result`, `output_text`, or `text`."""
     p = OpenAIProvider()
     _stub_resolve(monkeypatch)
     _stub_run(
         monkeypatch,
-        _route_dispatch(b'{"output_text": "via output_text"}\n'),
+        _route_dispatch("last message text"),
     )
     out = await p.run("hi")
-    assert out == "via output_text"
+    assert out == "last message text"
 
 
 @pytest.mark.asyncio

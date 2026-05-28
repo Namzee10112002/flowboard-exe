@@ -7,9 +7,9 @@
  * what we already learned instead of burning quota.
  */
 
-const REPO = "crisng95/flowboard";
+const REPO = "Namzee10112002/flowboard-exe";
 const RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
-const CACHE_KEY = "flowboard.github.latestRelease.v1";
+const CACHE_KEY = "flowboard.github.latestRelease.v2";
 // 1 hour — long enough that idle tabs don't hammer the API, short
 // enough that a freshly-cut release shows up the same session.
 const CACHE_TTL_MS = 60 * 60 * 1000;

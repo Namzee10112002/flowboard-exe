@@ -20,6 +20,7 @@ from sqlmodel import select
 from flowboard.config import STORAGE_DIR
 from flowboard.db import get_session
 from flowboard.db.models import Asset
+from sqlmodel import delete
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,12 @@ _EXT_BY_MIME = {
     "image/gif": ".gif",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/ogg": ".ogg",
 }
 
 
@@ -73,7 +80,19 @@ def _cache_glob(media_id: str) -> Optional[Path]:
 
 
 def cached_path(media_id: str) -> Optional[Path]:
-    return _cache_glob(media_id)
+    cached = _cache_glob(media_id)
+    if cached is not None:
+        return cached
+    if not is_valid_media_id(media_id):
+        return None
+    with get_session() as s:
+        row = s.exec(
+            select(Asset).where(Asset.uuid_media_id == media_id)
+        ).first()
+        if row is None or not row.local_path:
+            return None
+        path = Path(row.local_path)
+    return path if path.is_file() else None
 
 
 def ingest_urls(urls: list[dict[str, Any]]) -> int:
@@ -142,6 +161,32 @@ def ingest_inline_bytes(
         s.add(row)
         s.commit()
     logger.info("media: ingested %d inline bytes for %s", len(data), media_id)
+    return True
+
+
+def register_local_file(
+    media_id: str,
+    path: Path,
+    *,
+    kind: str = "video",
+    mime: str = "video/mp4",
+) -> bool:
+    """Register an already-written local file as a media asset."""
+    if not is_valid_media_id(media_id) or not path.is_file():
+        return False
+    with get_session() as s:
+        row = s.exec(
+            select(Asset).where(Asset.uuid_media_id == media_id)
+        ).first()
+        if row is None:
+            row = Asset(uuid_media_id=media_id, url=None, kind=kind)
+        row.local_path = str(path.resolve())
+        row.mime = mime
+        if not row.kind:
+            row.kind = kind
+        s.add(row)
+        s.commit()
+    logger.info("media: registered local file for %s: %s", media_id, path)
     return True
 
 
@@ -221,6 +266,30 @@ def status(media_id: str) -> dict:
         if row.url:
             return {"available": False, "has_url": True, "reason": "not_cached_yet"}
         return {"available": False, "has_url": False, "reason": "no_url_yet"}
+
+
+def delete_media(media_id: str) -> bool:
+    media_id = normalize_media_id(media_id)
+    if not is_valid_media_id(media_id):
+        return False
+
+    removed = False
+    for p in MEDIA_CACHE_DIR.glob(f"{media_id}.*"):
+        if p.is_file():
+            try:
+                p.unlink()
+                removed = True
+            except OSError:
+                pass
+
+    with get_session() as s:
+        row = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
+        if row is not None:
+            s.exec(delete(Asset).where(Asset.uuid_media_id == media_id))
+            s.commit()
+            removed = True
+
+    return removed
 
 
 def _mime_from_ext(ext: str) -> str:
