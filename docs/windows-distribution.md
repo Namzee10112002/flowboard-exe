@@ -8,7 +8,9 @@ Build output lives in `dist/`:
 - `update.exe`: downloads the latest `flowboard-windows.zip` from GitHub Releases and replaces the local files.
 - `extension/`: Chrome MV3 extension folder loaded automatically when Flowboard opens a managed Chrome profile.
 - `update.json`: updater config with `repo` and `asset`.
-- `flowboard-windows.zip`: release asset to upload to GitHub Releases.
+- `flowboard-windows.zip`: small core update asset for normal customer updates.
+- `flowboard-tools-windows.zip`: optional heavy tools asset, currently Demucs audio separation.
+- `flowboard-full-windows.zip`: full install asset for new installs that should include core + tools.
 
 The Chrome extension is intentionally shipped as a visible folder. Chrome cannot load an unpacked extension from inside a one-file exe bundle, so `Flowboard.exe` keeps `extension/` next to the executable and launches Chrome with `--load-extension`.
 
@@ -64,17 +66,18 @@ Encrypted builds require a real PyArmor license. The free trial can fail on larg
 1. Push source to GitHub.
 2. Create a tag, for example `v1.2.13`.
 3. Create a GitHub Release for that tag.
-4. Upload `dist/flowboard-windows.zip` as a release asset.
-5. Users run `update.exe`; it reads `update.json`, checks the latest release, downloads `flowboard-windows.zip`, and applies it.
+4. Upload `dist/flowboard-windows.zip` as the normal update asset.
+5. Optionally upload `dist/flowboard-tools-windows.zip` and `dist/flowboard-full-windows.zip`.
+6. Users run `update.exe`; it reads `update.json`, checks the latest release, downloads the small core asset, and applies it.
 
 ## User Install
 
-1. Extract `flowboard-windows.zip` to a folder such as `%LOCALAPPDATA%\FlowboardApp`.
+1. Extract `flowboard-full-windows.zip` to a folder such as `%LOCALAPPDATA%\FlowboardApp` for a full install, or `flowboard-windows.zip` for a lightweight install.
 2. Run `Flowboard.exe`.
 3. Copy HWID, receive key from admin, activate.
 4. In Account Manager, click **Open Flow profile**. Flowboard launches a dedicated Chrome profile with the bundled extension already loaded.
 5. Sign in to Google Flow once in that profile. Later launches reuse the saved profile cookies.
-6. Later updates: close Flowboard, run `update.exe`, then open `Flowboard.exe` again.
+6. Later updates: close Flowboard, run `update.exe`, then open `Flowboard.exe` again. Use `update.exe --with-tools` only when the optional tools package needs to be installed or refreshed.
 
 ## Current External Requirements
 

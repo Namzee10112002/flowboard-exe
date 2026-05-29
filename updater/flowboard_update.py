@@ -22,6 +22,7 @@ from typing import Any
 
 DEFAULT_REPO = "Namzee10112002/flowboard-exe"
 DEFAULT_ASSET_HINTS = ("flowboard", "windows")
+DEFAULT_TOOLS_ASSET = "flowboard-tools-windows.zip"
 SELF_NAMES = {"update.exe", "flowboardupdater.exe"}
 
 def _default_install_dir() -> Path:
@@ -44,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     _write_status(install_dir, "checking", repo=repo)
     release = _github_json(f"https://api.github.com/repos/{repo}/releases/latest")
     tag = str(release.get("tag_name") or "latest")
+    if not args.force and not args.with_tools and _is_current_version(install_dir, tag):
+        _write_status(install_dir, "already_current", repo=repo, tag=tag)
+        print(f"Flowboard is already up to date ({tag}).")
+        return 0
+
     asset = _select_asset(release, asset_name)
     if asset is None:
         _write_status(install_dir, "failed", repo=repo, tag=tag, message="No Windows zip asset found.")
@@ -74,6 +80,15 @@ def main(argv: list[str] | None = None) -> int:
             _write_status(install_dir, "failed", repo=repo, tag=tag, asset=name, message=str(exc))
             raise
 
+    if args.with_tools:
+        tools_name = args.tools_asset or config.get("tools_asset") or DEFAULT_TOOLS_ASSET
+        tools_asset = _select_asset(release, tools_name)
+        if tools_asset is None:
+            _write_status(install_dir, "failed", repo=repo, tag=tag, message="No tools zip asset found.")
+            print("No tools zip asset found on the latest release.")
+            return 2
+        _download_and_apply_asset(tools_asset, install_dir, repo, tag, dry_run=args.dry_run)
+
     _write_status(install_dir, "success", repo=repo, tag=tag, asset=name)
     print(f"Updated Flowboard to {tag}.")
     print("Start Flowboard.exe again if it is not already open.")
@@ -84,6 +99,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Update Flowboard from GitHub Releases.")
     parser.add_argument("--repo", help="GitHub repo in owner/name form.")
     parser.add_argument("--asset", help="Exact release asset name to download.")
+    parser.add_argument("--tools-asset", help="Exact tools release asset name to download.")
     parser.add_argument(
         "--install-dir",
         type=Path,
@@ -92,6 +108,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--source", action="store_true", help="Run git pull in a source checkout.")
     parser.add_argument("--dry-run", action="store_true", help="Check and download without copying.")
+    parser.add_argument("--force", action="store_true", help="Download and apply even when already on latest.")
+    parser.add_argument("--with-tools", action="store_true", help="Also download and apply the optional tools zip.")
     return parser.parse_args(argv)
 
 
@@ -139,12 +157,71 @@ def _select_asset(release: dict[str, Any], exact_name: str | None) -> dict[str, 
     ]
     return hinted[0] if hinted else (candidates[0] if candidates else None)
 
+def _is_current_version(install_dir: Path, tag: str) -> bool:
+    path = install_dir / "build-info.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    current = str(data.get("version") or "").strip().lstrip("v")
+    latest = str(tag or "").strip().lstrip("v")
+    return bool(current and latest and current == latest)
+
 
 def _download(url: str, destination: Path) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "Flowboard-Updater"})
     with urllib.request.urlopen(req, timeout=60) as resp:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
         with destination.open("wb") as f:
-            shutil.copyfileobj(resp, f)
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total > 0:
+                    pct = done * 100 / total
+                    print(
+                        f"\rDownloading: {pct:5.1f}% ({done // (1024 * 1024)} / {total // (1024 * 1024)} MB)",
+                        end="",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"\rDownloading: {done // (1024 * 1024)} MB",
+                        end="",
+                        flush=True,
+                    )
+        print()
+
+def _download_and_apply_asset(
+    asset: dict[str, Any],
+    install_dir: Path,
+    repo: str,
+    tag: str,
+    *,
+    dry_run: bool,
+) -> None:
+    download_url = str(asset["browser_download_url"])
+    name = str(asset["name"])
+    print(f"Downloading {name} ({tag})...")
+    _write_status(install_dir, "downloading", repo=repo, tag=tag, asset=name)
+    with tempfile.TemporaryDirectory(prefix="flowboard-update-") as tmp:
+        tmp_dir = Path(tmp)
+        zip_path = tmp_dir / name
+        _download(download_url, zip_path)
+        extract_dir = tmp_dir / "extract"
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        payload_dir = _payload_root(extract_dir)
+        if dry_run:
+            print(f"Dry run: would copy {payload_dir} -> {install_dir}")
+            return
+        _write_status(install_dir, "applying", repo=repo, tag=tag, asset=name)
+        _apply_payload(payload_dir, install_dir)
 
 def _write_status(install_dir: Path, status: str, **fields: Any) -> None:
     payload = {

@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+import os
 import re
 import subprocess
 import tempfile
@@ -55,11 +56,25 @@ _PROBE_TIMEOUT = 5.0
 _DEFAULT_TIMEOUT = 90.0
 _DEFAULT_TEXT_MODEL = "gpt-5"
 _DEFAULT_VISION_MODEL = "gpt-4o"
+_DEFAULT_CODEX_MODEL = _DEFAULT_TEXT_MODEL
 _AVAILABILITY_TTL_S = 60.0
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
 # Image-flag candidates ordered by likelihood. First match wins.
 _IMAGE_FLAG_CANDIDATES = ("--image", "--attach", "--file", "--input")
+
+def _compact_cli_error(text: str, *, limit: int = 1800) -> str:
+    """Keep the useful tail of Codex stderr.
+
+    Codex prints a long run header before the actual failure. Keeping only the
+    first bytes hides the real reason, so preserve the end and a small prefix.
+    """
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    head_len = 500
+    tail_len = max(0, limit - head_len - 40)
+    return f"{text[:head_len]}\n...\n{text[-tail_len:]}"
 
 
 class OpenAIProvider:
@@ -239,8 +254,6 @@ class OpenAIProvider:
         timeout: float,
     ) -> str:
         """Spawn `codex exec -` and return the final response text."""
-        import os
-
         # Validate inputs
         try:
             validate_prompt_size(user_prompt)
@@ -265,10 +278,13 @@ class OpenAIProvider:
 
         with tempfile.TemporaryDirectory(prefix="flowboard-codex-") as tmpdir:
             output_path = Path(tmpdir) / "last-message.txt"
+            codex_model = os.getenv("FLOWBOARD_CODEX_MODEL", _DEFAULT_CODEX_MODEL).strip()
             args: list[str] = [
                 codex_bin,
                 "exec",
                 "--skip-git-repo-check",
+                "--model",
+                codex_model,
                 "--output-last-message",
                 str(output_path),
                 "-",
@@ -293,7 +309,10 @@ class OpenAIProvider:
                 raise LLMError(f"codex CLI error: {exc}") from exc
 
             if result.returncode != 0:
-                stderr = result.stderr.decode(errors="replace")[:400]
+                stderr = _compact_cli_error(
+                    result.stderr.decode(errors="replace")
+                    or result.stdout.decode(errors="replace")
+                )
                 raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
 
             if output_path.exists():

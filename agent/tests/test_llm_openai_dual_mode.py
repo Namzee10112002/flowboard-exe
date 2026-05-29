@@ -298,6 +298,7 @@ async def test_run_text_via_cli_when_codex_available(
     assert "-p" not in argv
     assert "--output-schema" not in argv
     assert "--skip-git-repo-check" in argv
+    assert argv[argv.index("--model") + 1] == "gpt-5"
     assert "--output-last-message" in argv
     assert argv[-1] == "-"
     # Prompt is on stdin, not in argv.
@@ -492,3 +493,22 @@ async def test_cli_nonzero_exit_raises(tmp_secrets_path, monkeypatch):
     _stub_run(monkeypatch, dispatcher)
     with pytest.raises(LLMError, match="codex CLI exited 1"):
         await p.run("hi")
+
+@pytest.mark.asyncio
+async def test_cli_nonzero_exit_keeps_tail_error(tmp_secrets_path, monkeypatch):
+    p = OpenAIProvider()
+    _stub_resolve(monkeypatch)
+    header = ("OpenAI Codex v0.134.0\n" + ("-" * 1200)).encode()
+    tail = b"\nError: model gpt-5.5 is not available for this account"
+
+    def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
+        if "--version" in argv:
+            return _FakeResult(returncode=0, stdout=b"codex 1.0\n")
+        if "--help" in argv:
+            return _FakeResult(returncode=0, stdout=b"  --image PATH\n")
+        return _FakeResult(returncode=1, stderr=header + tail)
+
+    _stub_run(monkeypatch, dispatcher)
+    with pytest.raises(LLMError) as exc:
+        await p.run("hi")
+    assert "model gpt-5.5 is not available" in str(exc.value)
