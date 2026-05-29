@@ -31,6 +31,8 @@ _WINDOWS_NPM_PATHS = [
     ("HOME", "AppData", "Roaming", "npm"),
 ]
 _CODEX_IGNORED_OPENAI_ENV_PREFIX = "OPENAI_"
+_CODEX_IGNORED_CODEX_ENV_PREFIX = "CODEX_"
+_CODEX_ALLOWED_ENV_NAMES = {"CODEX_HOME"}
 
 
 def get_windows_npm_paths(cli_name: str) -> list[str]:
@@ -99,8 +101,8 @@ def build_cli_env(cli_name: str) -> dict[str, str]:
     """Subprocess environment that can run Flowboard-managed CLI shims."""
     env = os.environ.copy()
     if cli_name == "codex":
-        env.setdefault("CODEX_HOME", str(get_codex_home()))
-        _strip_codex_openai_env(env)
+        _strip_codex_inherited_env(env)
+        env["CODEX_HOME"] = str(get_codex_home())
     prepended: list[str] = []
     for tool_path in get_flowboard_tool_paths(cli_name):
         parent = Path(tool_path).parent
@@ -128,22 +130,35 @@ def codex_ignored_openai_env_names() -> list[str]:
         if name.upper().startswith(_CODEX_IGNORED_OPENAI_ENV_PREFIX)
     )
 
-def _strip_codex_openai_env(env: dict[str, str]) -> None:
-    """Keep ambient OpenAI API config from overriding Codex ChatGPT OAuth."""
+def codex_ignored_codex_env_names() -> list[str]:
+    """Codex env vars Flowboard excludes from private Codex subprocesses."""
+    return sorted(
+        name
+        for name in os.environ
+        if name.upper().startswith(_CODEX_IGNORED_CODEX_ENV_PREFIX)
+        and name.upper() not in _CODEX_ALLOWED_ENV_NAMES
+    )
+
+def _strip_codex_inherited_env(env: dict[str, str]) -> None:
+    """Keep ambient OpenAI/Codex config from overriding Flowboard's Codex profile."""
     for name in list(env):
-        if name.upper().startswith(_CODEX_IGNORED_OPENAI_ENV_PREFIX):
+        upper = name.upper()
+        if upper.startswith(_CODEX_IGNORED_OPENAI_ENV_PREFIX):
+            env.pop(name, None)
+            continue
+        if upper.startswith(_CODEX_IGNORED_CODEX_ENV_PREFIX) and upper not in _CODEX_ALLOWED_ENV_NAMES:
             env.pop(name, None)
 
 def get_codex_home() -> Path:
     """Return the Codex config/auth directory used by Flowboard subprocesses."""
-    override = os.environ.get("CODEX_HOME")
+    override = os.environ.get("FLOWBOARD_CODEX_HOME")
     if override:
         return Path(override).expanduser().resolve()
-    if os.name == "nt":
-        user_profile = os.environ.get("USERPROFILE")
-        if user_profile:
-            return Path(user_profile).resolve() / ".codex"
-    return Path.home().resolve() / ".codex"
+    try:
+        from flowboard.config import STORAGE_DIR
+    except Exception:  # noqa: BLE001
+        return Path.home().resolve() / ".flowboard" / "codex-home"
+    return (STORAGE_DIR / "codex-home").resolve()
 
 
 def hidden_subprocess_kwargs() -> dict[str, Any]:

@@ -57,7 +57,6 @@ _PROBE_TIMEOUT = 5.0
 _DEFAULT_TIMEOUT = 90.0
 _DEFAULT_TEXT_MODEL = "gpt-5"
 _DEFAULT_VISION_MODEL = "gpt-4o"
-_DEFAULT_CODEX_MODEL = _DEFAULT_TEXT_MODEL
 _AVAILABILITY_TTL_S = 60.0
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
@@ -326,17 +325,17 @@ class OpenAIProvider:
 
         with tempfile.TemporaryDirectory(prefix="flowboard-codex-") as tmpdir:
             output_path = Path(tmpdir) / "last-message.txt"
-            codex_model = os.getenv("FLOWBOARD_CODEX_MODEL", _DEFAULT_CODEX_MODEL).strip()
             args: list[str] = [
                 codex_bin,
                 "exec",
                 "--skip-git-repo-check",
-                "--model",
-                codex_model,
                 "--output-last-message",
                 str(output_path),
-                "-",
             ]
+            codex_model = os.getenv("FLOWBOARD_CODEX_MODEL", "").strip()
+            if codex_model:
+                args += ["--model", codex_model]
+            args.append("-")
             if attachments and self._cli_image_flag:
                 for path in attachments:
                     args += [self._cli_image_flag, os.path.abspath(path)]

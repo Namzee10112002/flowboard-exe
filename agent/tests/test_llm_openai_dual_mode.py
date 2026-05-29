@@ -307,7 +307,7 @@ async def test_run_text_via_cli_when_codex_available(
     assert "-p" not in argv
     assert "--output-schema" not in argv
     assert "--skip-git-repo-check" in argv
-    assert argv[argv.index("--model") + 1] == "gpt-5"
+    assert "--model" not in argv
     assert "--output-last-message" in argv
     assert argv[-1] == "-"
     # Prompt is on stdin, not in argv.
@@ -316,6 +316,28 @@ async def test_run_text_via_cli_when_codex_available(
     assert "[User]\nhi" in stdin_text
     assert "hi" not in argv
     assert "--system" not in argv
+
+
+@pytest.mark.asyncio
+async def test_run_text_via_cli_allows_explicit_codex_model(
+    tmp_secrets_path, monkeypatch
+):
+    monkeypatch.setenv("FLOWBOARD_CODEX_MODEL", "gpt-5.5")
+    p = OpenAIProvider()
+    _stub_resolve(monkeypatch)
+    state = _stub_run(
+        monkeypatch,
+        _route_dispatch("hello text"),
+    )
+
+    await p.run("hi")
+
+    dispatch_calls = [
+        (argv, kwargs) for argv, kwargs in state["calls"]
+        if not _is_probe_or_login_status(argv)
+    ]
+    argv, _ = dispatch_calls[0]
+    assert argv[argv.index("--model") + 1] == "gpt-5.5"
 
 
 @pytest.mark.asyncio

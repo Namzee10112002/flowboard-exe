@@ -8,6 +8,7 @@ import pytest
 from flowboard.services.llm import codex_bootstrap
 from flowboard.services.llm.cli_utils import (
     build_cli_env,
+    codex_ignored_codex_env_names,
     codex_ignored_openai_env_names,
     get_codex_home,
     get_flowboard_node_paths,
@@ -39,7 +40,8 @@ def test_build_cli_env_includes_flowboard_portable_node(tmp_path, monkeypatch):
 
 def test_build_cli_env_sets_codex_home(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-home"
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "global-codex"))
+    monkeypatch.setenv("FLOWBOARD_CODEX_HOME", str(codex_home))
 
     env = build_cli_env("codex")
 
@@ -47,15 +49,23 @@ def test_build_cli_env_sets_codex_home(tmp_path, monkeypatch):
     assert get_codex_home() == codex_home.resolve()
 
 
-def test_build_cli_env_strips_ambient_openai_env(monkeypatch):
+def test_build_cli_env_strips_ambient_openai_and_codex_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "bad-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("CODEX_CI", "1")
+    monkeypatch.setenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop")
 
     env = build_cli_env("codex")
 
     assert "OPENAI_API_KEY" not in env
     assert "OPENAI_BASE_URL" not in env
+    assert "CODEX_CI" not in env
+    assert "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" not in env
+    assert "CODEX_HOME" in env
     assert codex_ignored_openai_env_names() == ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
+    ignored_codex = codex_ignored_codex_env_names()
+    assert "CODEX_CI" in ignored_codex
+    assert "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" in ignored_codex
 
 
 def test_bootstrap_uses_portable_node_path_when_probing_local_codex(tmp_path, monkeypatch):
@@ -131,7 +141,7 @@ def test_reset_codex_login_moves_auth_files(tmp_path, monkeypatch):
     creds = codex_home / "credentials.json"
     auth.write_text("auth", encoding="utf-8")
     creds.write_text("creds", encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("FLOWBOARD_CODEX_HOME", str(codex_home))
     monkeypatch.setattr(
         codex_bootstrap,
         "codex_bootstrap_status",

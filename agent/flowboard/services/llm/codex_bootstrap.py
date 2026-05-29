@@ -17,6 +17,7 @@ from flowboard.config import STORAGE_DIR
 from flowboard.services.llm.cli_utils import (
     CLI_PROBE_TIMEOUT,
     build_cli_env,
+    codex_ignored_codex_env_names,
     codex_ignored_openai_env_names,
     get_codex_home,
     hidden_subprocess_kwargs,
@@ -152,6 +153,7 @@ def codex_bootstrap_status() -> dict[str, Any]:
         "codex_login_state": codex_login_state if codex_ok else "not_installed",
         "codex_login_status": codex_login_status,
         "codex_home": str(get_codex_home()),
+        "codex_ignored_codex_env": codex_ignored_codex_env_names(),
         "codex_ignored_openai_env": codex_ignored_openai_env_names(),
         "codex_install_dir": str(codex_install_root()),
         "node_install_dir": str(bundled_node_root()),
