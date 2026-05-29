@@ -63,6 +63,12 @@ _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 
 # Image-flag candidates ordered by likelihood. First match wins.
 _IMAGE_FLAG_CANDIDATES = ("--image", "--attach", "--file", "--input")
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CODEX_AUTH_ERROR_MESSAGE = (
+    "OpenAI Codex is not signed in, or the saved session has expired. "
+    "Open Settings -> AI Providers -> OpenAI Codex -> Open Codex login, "
+    "then try again."
+)
 
 def _compact_cli_error(text: str, *, limit: int = 1800) -> str:
     """Keep the useful tail of Codex stderr.
@@ -70,12 +76,31 @@ def _compact_cli_error(text: str, *, limit: int = 1800) -> str:
     Codex prints a long run header before the actual failure. Keeping only the
     first bytes hides the real reason, so preserve the end and a small prefix.
     """
-    text = (text or "").strip()
+    text = _strip_ansi(text or "").strip()
     if len(text) <= limit:
         return text
     head_len = 500
     tail_len = max(0, limit - head_len - 40)
     return f"{text[:head_len]}\n...\n{text[-tail_len:]}"
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text or "")
+
+
+def _codex_auth_error(raw_output: str) -> str | None:
+    normalized = _strip_ansi(raw_output).lower()
+    auth_markers = (
+        "401 unauthorized",
+        "http error: 401",
+        "not logged in",
+        "not authenticated",
+        "unauthorized",
+        "login required",
+    )
+    if any(marker in normalized for marker in auth_markers):
+        return _CODEX_AUTH_ERROR_MESSAGE
+    return None
 
 
 def _codex_login_state() -> str:
@@ -278,10 +303,7 @@ class OpenAIProvider:
 
         codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
         if _codex_login_state() == "not_logged_in":
-            raise LLMError(
-                "OpenAI Codex is installed but not signed in. Open Settings -> "
-                "AI Providers -> OpenAI Codex -> Open Codex login."
-            )
+            raise LLMError(_CODEX_AUTH_ERROR_MESSAGE)
         # Pipe the prompt via stdin (`-` positional sentinel) instead of as an
         # argv token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
         # cmd.exe re-parses argv for ``.cmd``-shimmed binaries and
@@ -328,10 +350,13 @@ class OpenAIProvider:
                 raise LLMError(f"codex CLI error: {exc}") from exc
 
             if result.returncode != 0:
-                stderr = _compact_cli_error(
+                raw_error = (
                     result.stderr.decode(errors="replace")
                     or result.stdout.decode(errors="replace")
                 )
+                if auth_error := _codex_auth_error(raw_error):
+                    raise LLMError(auth_error)
+                stderr = _compact_cli_error(raw_error)
                 raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
 
             if output_path.exists():
