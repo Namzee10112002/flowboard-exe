@@ -1040,6 +1040,7 @@ export type LLMProviderMode = "cli" | "api" | "none";
 export type LLMLastError =
   | "not_installed"
   | "not_authenticated"
+  | "session_expired"
   | "no_key"
   | "unreachable"
   | "unknown";

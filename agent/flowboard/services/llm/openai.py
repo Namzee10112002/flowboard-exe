@@ -126,6 +126,7 @@ class OpenAIProvider:
         self._cli_probed: bool = False
         self._cli_available: bool = False
         self._cli_image_flag: Optional[str] = None
+        self._cli_auth_error: bool = False
 
         # API availability cache (separate from CLI — they're independent).
         self._api_cached_at: Optional[float] = None
@@ -136,8 +137,14 @@ class OpenAIProvider:
         self._cli_probed = False
         self._cli_available = False
         self._cli_image_flag = None
+        self._cli_auth_error = False
         self._api_cached_at = None
         self._api_value = None
+
+    @property
+    def cli_auth_error(self) -> bool:
+        """True after Codex CLI reported an auth/session failure."""
+        return self._cli_auth_error
 
     # ── CLI probe ────────────────────────────────────────────────────
 
@@ -303,6 +310,7 @@ class OpenAIProvider:
 
         codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
         if _codex_login_state() == "not_logged_in":
+            self._cli_auth_error = True
             raise LLMError(_CODEX_AUTH_ERROR_MESSAGE)
         # Pipe the prompt via stdin (`-` positional sentinel) instead of as an
         # argv token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
@@ -350,11 +358,16 @@ class OpenAIProvider:
                 raise LLMError(f"codex CLI error: {exc}") from exc
 
             if result.returncode != 0:
-                raw_error = (
-                    result.stderr.decode(errors="replace")
-                    or result.stdout.decode(errors="replace")
+                raw_error = "\n".join(
+                    part
+                    for part in (
+                        result.stderr.decode(errors="replace"),
+                        result.stdout.decode(errors="replace"),
+                    )
+                    if part
                 )
                 if auth_error := _codex_auth_error(raw_error):
+                    self._cli_auth_error = True
                     raise LLMError(auth_error)
                 stderr = _compact_cli_error(raw_error)
                 raise LLMError(f"codex CLI exited {result.returncode}: {stderr}")
@@ -365,10 +378,12 @@ class OpenAIProvider:
                     errors="replace",
                 ).strip()
                 if output_text:
+                    self._cli_auth_error = False
                     return output_text
 
             stdout = result.stdout.decode(errors="replace").strip()
             if stdout:
+                self._cli_auth_error = False
                 return stdout
 
             raise LLMError("codex CLI produced no output")

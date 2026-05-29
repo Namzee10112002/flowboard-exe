@@ -36,6 +36,7 @@ const PROVIDER_META: Record<
 };
 
 function statusLabel(p: LLMProviderInfo): string {
+  if (p.lastError === "session_expired") return "Session expired";
   if (p.available && p.configured) return "Connected";
   if (p.lastError === "not_authenticated") return "Not signed in";
   if (p.requiresKey && !p.configured) return "API key needed";
@@ -43,6 +44,7 @@ function statusLabel(p: LLMProviderInfo): string {
 }
 
 function statusKind(p: LLMProviderInfo): "ok" | "warn" {
+  if (p.lastError === "session_expired") return "warn";
   return p.available && p.configured ? "ok" : "warn";
 }
 

@@ -105,6 +105,8 @@ async def list_providers() -> list[dict]:
                     if bootstrap.get("codex_present")
                     else "not_installed"
                 )
+            elif bool(getattr(provider, "cli_auth_error", False)) and not api_configured:
+                last_error = "session_expired"
             requires_key = False  # CLI path doesn't require it
         else:
             mode = "cli"

@@ -190,6 +190,9 @@ export function AiProvidersSection() {
         ? { state: "ok", latencyMs: result.latencyMs }
         : { state: "fail", error: result.error || "test failed" },
     );
+    if (!result.ok && pending === "openai") {
+      await refresh();
+    }
   }
 
   async function handleApply() {
@@ -406,6 +409,16 @@ export function AiProvidersSection() {
                 onTest={runTest}
               />
               <div className="selection-panel__actions">
+                {pending === "openai" && (
+                  <button
+                    type="button"
+                    className="selection-panel__setup-btn"
+                    onClick={handleOpenCodexLogin}
+                    disabled={codexLoginOpening}
+                  >
+                    {codexLoginOpening ? "Opening Codex login..." : "Open Codex login"}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="selection-panel__apply-btn"

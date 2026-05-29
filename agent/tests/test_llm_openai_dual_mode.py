@@ -546,6 +546,30 @@ async def test_cli_unauthorized_exit_prompts_codex_login(
     _stub_run(monkeypatch, dispatcher)
     with pytest.raises(LLMError, match="Open Codex login"):
         await p.run("hi")
+    assert p.cli_auth_error is True
+
+@pytest.mark.asyncio
+async def test_cli_unauthorized_exit_checks_stdout_and_stderr(
+    tmp_secrets_path, monkeypatch
+):
+    p = OpenAIProvider()
+    _stub_resolve(monkeypatch)
+    stderr = b"OpenAI Codex v0.134.0\n--------\nworkdir: C:\\Flowboard\n"
+    stdout = b"failed to connect to websocket: HTTP error: 401 Unauthorized\n"
+
+    def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
+        if "--version" in argv:
+            return _FakeResult(returncode=0, stdout=b"codex 1.0\n")
+        if "--help" in argv:
+            return _FakeResult(returncode=0, stdout=b"  --image PATH\n")
+        if "login" in argv and "status" in argv:
+            return _FakeResult(returncode=0, stdout=b"Logged in using ChatGPT\n")
+        return _FakeResult(returncode=1, stdout=stdout, stderr=stderr)
+
+    _stub_run(monkeypatch, dispatcher)
+    with pytest.raises(LLMError, match="Open Codex login"):
+        await p.run("hi")
+    assert p.cli_auth_error is True
 
 @pytest.mark.asyncio
 async def test_cli_nonzero_exit_keeps_tail_error(tmp_secrets_path, monkeypatch):
