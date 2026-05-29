@@ -245,6 +245,42 @@ def test_codex_bootstrap_install_failure_returns_409(client, monkeypatch):
     assert resp.json()["detail"] == "npm_not_found"
 
 
+def test_codex_login_launch_route(client, monkeypatch):
+    monkeypatch.setattr(
+        "flowboard.routes.llm.launch_codex_login",
+        lambda: {
+            "ok": True,
+            "launched": True,
+            "mode": "windows_terminal",
+            "status": {"codex_present": True},
+        },
+    )
+
+    resp = client.post("/api/llm/providers/openai/codex-login")
+
+    assert resp.status_code == 200
+    assert resp.json()["launched"] is True
+
+
+def test_list_providers_marks_openai_not_authenticated(client, tmp_secrets_path, monkeypatch):
+    openai = registry._PROVIDERS["openai"]
+    monkeypatch.setattr(
+        "flowboard.routes.llm.codex_bootstrap_status",
+        lambda: {
+            "codex_present": True,
+            "codex_login_state": "not_logged_in",
+        },
+    )
+
+    with patch.object(openai, "is_available", return_value=True):
+        resp = client.get("/api/llm/providers")
+
+    by_name = {p["name"]: p for p in resp.json()}
+    assert by_name["openai"]["available"] is False
+    assert by_name["openai"]["configured"] is False
+    assert by_name["openai"]["lastError"] == "not_authenticated"
+
+
 # ── GET /api/llm/config ───────────────────────────────────────────────
 
 

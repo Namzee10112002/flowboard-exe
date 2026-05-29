@@ -3,6 +3,7 @@ import {
   bootstrapCodexCli,
   getLlmConfig,
   getLlmProviders,
+  launchCodexLogin,
   setLlmConfig,
   testLlmProvider,
   type LLMConfig,
@@ -110,6 +111,7 @@ export function AiProvidersSection() {
   const [helpFor, setHelpFor] = useState<LLMProviderName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [codexInstalling, setCodexInstalling] = useState(false);
+  const [codexLoginOpening, setCodexLoginOpening] = useState(false);
 
   const aliveRef = useRef(true);
   useEffect(() => {
@@ -225,7 +227,7 @@ export function AiProvidersSection() {
       const res = await bootstrapCodexCli();
       showToast(
         res.changed
-          ? "Codex installed. Sign in with Codex, then test the connection."
+          ? "Codex installed. Open Codex login, then test the connection."
           : "Codex is already installed.",
       );
       await refresh();
@@ -235,6 +237,22 @@ export function AiProvidersSection() {
       );
     } finally {
       if (aliveRef.current) setCodexInstalling(false);
+    }
+  }
+
+  async function handleOpenCodexLogin() {
+    if (codexLoginOpening) return;
+    setCodexLoginOpening(true);
+    try {
+      await launchCodexLogin();
+      showToast("Codex login window opened. Finish sign-in, then test again.");
+      await refresh();
+    } catch (err) {
+      showToast(
+        `Codex login failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      if (aliveRef.current) setCodexLoginOpening(false);
     }
   }
 
@@ -336,9 +354,11 @@ export function AiProvidersSection() {
                 {labelOf(pending)} needs setup
               </div>
               <div className="selection-panel__setup-text">
-                {pendingProvider.lastError === "not_authenticated"
-                  ? "The CLI is installed but not signed in. Open Setup help for the login command."
-                  : "Install the CLI from npm and sign in. Open Setup help for the exact commands."}
+                {pending === "openai" && pendingProvider.lastError === "not_authenticated"
+                  ? "Codex is installed but not signed in. Open Codex login, finish sign-in, then test again."
+                  : pending === "openai"
+                    ? "Install Codex automatically, then open Codex login."
+                    : "Install the CLI from npm and sign in. Open Setup help for the exact commands."}
               </div>
               <button
                 type="button"
@@ -347,7 +367,7 @@ export function AiProvidersSection() {
               >
                 Setup help →
               </button>
-              {pending === "openai" && (
+              {pending === "openai" && pendingProvider.lastError === "not_installed" && (
                 <button
                   type="button"
                   className="selection-panel__setup-btn"
@@ -355,6 +375,16 @@ export function AiProvidersSection() {
                   disabled={codexInstalling}
                 >
                   {codexInstalling ? "Installing Codex..." : "Install Codex automatically"}
+                </button>
+              )}
+              {pending === "openai" && pendingProvider.lastError !== "not_installed" && (
+                <button
+                  type="button"
+                  className="selection-panel__setup-btn"
+                  onClick={handleOpenCodexLogin}
+                  disabled={codexLoginOpening}
+                >
+                  {codexLoginOpening ? "Opening Codex login..." : "Open Codex login"}
                 </button>
               )}
             </div>

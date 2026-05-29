@@ -70,3 +70,29 @@ def test_bootstrap_uses_portable_node_path_when_probing_local_codex(tmp_path, mo
     assert result["ok"] is True
     assert result["status"]["codex_present"] is True
     assert str(node_dir.resolve()) in seen_probe_env["PATH"]
+
+def test_status_reports_codex_not_logged_in(tmp_path, monkeypatch):
+    tools = tmp_path / "tools"
+    codex = tools / "codex" / "node_modules" / ".bin" / (
+        "codex.cmd" if os.name == "nt" else "codex"
+    )
+    codex.parent.mkdir(parents=True, exist_ok=True)
+    codex.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FLOWBOARD_TOOLS_DIR", str(tools))
+    monkeypatch.setattr(codex_bootstrap, "_system_npm_bin", lambda: None)
+    monkeypatch.setattr(codex_bootstrap.shutil, "which", lambda *_a, **_kw: None)
+
+    def fake_run(args, **kwargs):
+        argv = [str(a) for a in args]
+        if argv[1:] == ["--version"]:
+            return _RunResult(stdout="codex-cli 1.0.0")
+        if argv[1:] == ["login", "status"]:
+            return _RunResult(returncode=1, stdout="Not logged in")
+        raise AssertionError(f"unexpected subprocess args: {argv}")
+
+    monkeypatch.setattr(codex_bootstrap.subprocess, "run", fake_run)
+
+    status = codex_bootstrap.codex_bootstrap_status()
+
+    assert status["codex_present"] is True
+    assert status["codex_login_state"] == "not_logged_in"

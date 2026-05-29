@@ -1136,6 +1136,8 @@ export interface CodexBootstrapStatus {
   codex_present: boolean;
   codex_path: string | null;
   codex_version: string | null;
+  codex_login_state: "logged_in" | "not_logged_in" | "not_installed" | "unknown";
+  codex_login_status: string | null;
   codex_install_dir: string;
   node_install_dir: string;
 }
@@ -1155,6 +1157,23 @@ export async function bootstrapCodexCli(): Promise<CodexBootstrapResult> {
     throw new Error(await extractErrorMessage(res));
   }
   return res.json() as Promise<CodexBootstrapResult>;
+}
+
+export interface CodexLoginLaunchResult {
+  ok: boolean;
+  launched: boolean;
+  mode: string;
+  status: CodexBootstrapStatus;
+}
+
+export async function launchCodexLogin(): Promise<CodexLoginLaunchResult> {
+  const res = await fetch("/api/llm/providers/openai/codex-login", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<CodexLoginLaunchResult>;
 }
 
 export interface FlowAccountDTO {

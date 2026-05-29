@@ -4565,6 +4565,10 @@ button:disabled {
 .selection-panel__setup-btn:hover {
   background: rgba(124, 92, 255, 0.28);
 }
+.selection-panel__setup-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 .selection-panel__actions {
   display: flex;

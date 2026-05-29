@@ -29,6 +29,7 @@ from flowboard.services.llm.codex_bootstrap import (
     CodexBootstrapError,
     bootstrap_codex_cli,
     codex_bootstrap_status,
+    launch_codex_login,
 )
 from flowboard.services import claude_cli
 
@@ -87,26 +88,40 @@ async def list_providers() -> list[dict]:
         # "user has set things up but the key is bad" from "user hasn't
         # set anything up yet".
         available = await provider.is_available()
+        last_error = None
         if provider.name == "openai":
             mode = provider.mode  # type: ignore[attr-defined]
-            configured = (
-                bool(secrets.get_api_key("openai"))
-                or getattr(provider, "_cli_available", False)
+            bootstrap = codex_bootstrap_status()
+            api_configured = bool(secrets.get_api_key("openai"))
+            cli_logged_in = (
+                available
+                and bootstrap.get("codex_login_state") == "logged_in"
             )
+            configured = api_configured or cli_logged_in
+            available = configured
+            if not configured:
+                last_error = (
+                    "not_authenticated"
+                    if bootstrap.get("codex_present")
+                    else "not_installed"
+                )
             requires_key = False  # CLI path doesn't require it
         else:
             mode = "cli"
             configured = available
             requires_key = False
 
-        out.append({
+        entry = {
             "name": provider.name,
             "supportsVision": provider.supports_vision,
             "available": available,
             "configured": configured,
             "requiresKey": requires_key,
             "mode": mode,
-        })
+        }
+        if last_error is not None:
+            entry["lastError"] = last_error
+        out.append(entry)
     return out
 
 @router.get("/providers/openai/codex-bootstrap")
@@ -123,6 +138,14 @@ def install_codex_bootstrap() -> dict:
     if provider is not None and hasattr(provider, "reset_cache"):
         provider.reset_cache()
     return result
+
+
+@router.post("/providers/openai/codex-login")
+def open_codex_login() -> dict:
+    try:
+        return launch_codex_login()
+    except CodexBootstrapError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ── PUT /api/llm/providers/{name} ─────────────────────────────────────

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -75,14 +76,33 @@ def _probe_cmd(
     return result.returncode == 0, output or None
 
 
+def _codex_candidates() -> list[str]:
+    candidates: list[str] = []
+    if bundled_codex_bin().is_file():
+        candidates.append(str(bundled_codex_bin()))
+    system_codex = shutil.which("codex")
+    if system_codex and system_codex not in candidates:
+        candidates.append(system_codex)
+    return candidates
+
+
+def _login_state_from_output(ok: bool, output: str | None) -> tuple[str, str | None]:
+    detail = (output or "").strip() or None
+    normalized = (detail or "").lower()
+    if "not logged in" in normalized or "not authenticated" in normalized:
+        return "not_logged_in", detail
+    if "unauthorized" in normalized or "401" in normalized:
+        return "not_logged_in", detail
+    if "logged in" in normalized or "authenticated" in normalized:
+        return "logged_in", detail
+    if ok:
+        return "logged_in", detail
+    return "unknown", detail
+
+
 def codex_bootstrap_status() -> dict[str, Any]:
     npm_bin = _system_npm_bin() or (_bundled_npm_bin() and str(_bundled_npm_bin()))
-    codex_candidates: list[str] = []
-    if bundled_codex_bin().is_file():
-        codex_candidates.append(str(bundled_codex_bin()))
-    system_codex = shutil.which("codex")
-    if system_codex and system_codex not in codex_candidates:
-        codex_candidates.append(system_codex)
+    codex_candidates = _codex_candidates()
     codex_bin = codex_candidates[0] if codex_candidates else None
     codex_ok = False
     codex_version = None
@@ -96,6 +116,17 @@ def codex_bootstrap_status() -> dict[str, Any]:
             break
         if codex_version is None:
             codex_version = version
+    codex_login_state = "unknown"
+    codex_login_status = None
+    if codex_ok and codex_bin:
+        login_ok, login_output = _probe_cmd(
+            [codex_bin, "login", "status"],
+            env=env,
+        )
+        codex_login_state, codex_login_status = _login_state_from_output(
+            login_ok,
+            login_output,
+        )
     npm_version = None
     if npm_bin:
         _, npm_version = _probe_cmd([npm_bin, "--version"], env=env)
@@ -107,6 +138,8 @@ def codex_bootstrap_status() -> dict[str, Any]:
         "codex_present": codex_ok,
         "codex_path": codex_bin if codex_ok else None,
         "codex_version": codex_version,
+        "codex_login_state": codex_login_state if codex_ok else "not_installed",
+        "codex_login_status": codex_login_status,
         "codex_install_dir": str(codex_install_root()),
         "node_install_dir": str(bundled_node_root()),
     }
@@ -160,6 +193,90 @@ def bootstrap_codex_cli() -> dict[str, Any]:
         "node_downloaded": node_downloaded,
         "status": after,
     }
+
+
+def launch_codex_login() -> dict[str, Any]:
+    status = codex_bootstrap_status()
+    codex_path = status.get("codex_path")
+    if not codex_path:
+        raise CodexBootstrapError("codex_not_installed")
+
+    npm_path = status.get("npm_path")
+    env = _bootstrap_env(str(npm_path) if npm_path else None)
+    codex_bin = Path(str(codex_path))
+    if os.name == "nt":
+        _launch_windows_codex_login(codex_bin, env)
+        return {
+            "ok": True,
+            "launched": True,
+            "mode": "windows_terminal",
+            "status": status,
+        }
+
+    if not _launch_posix_codex_login(codex_bin, env):
+        raise CodexBootstrapError("codex_login_terminal_unavailable")
+    return {"ok": True, "launched": True, "mode": "terminal", "status": status}
+
+
+def _launch_windows_codex_login(codex_bin: Path, env: dict[str, str]) -> None:
+    script = tools_root() / "codex-login.cmd"
+    script.write_text(
+        "\r\n".join(
+            [
+                "@echo off",
+                "title Flowboard Codex Login",
+                "echo Flowboard Codex Login",
+                "echo.",
+                f"\"{codex_bin}\" login",
+                "echo.",
+                "echo Current login status:",
+                f"\"{codex_bin}\" login status",
+                "echo.",
+                "echo Close this window after login succeeds.",
+                "pause",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    command = f'start "Flowboard Codex Login" "{script}"'
+    subprocess.Popen(
+        ["cmd.exe", "/d", "/c", command],
+        cwd=str(codex_install_root()),
+        env=env,
+        close_fds=True,
+    )
+
+
+def _launch_posix_codex_login(codex_bin: Path, env: dict[str, str]) -> bool:
+    quoted = shlex.quote(str(codex_bin))
+    command = (
+        f"{quoted} login; echo; "
+        f"echo Current login status:; {quoted} login status; "
+        "echo; read -r -p 'Close this window after login succeeds.'"
+    )
+    if platform.system() == "Darwin" and shutil.which("osascript"):
+        subprocess.Popen(
+            [
+                "osascript",
+                "-e",
+                'tell application "Terminal" to do script ' + json.dumps(command),
+            ],
+            env=env,
+            close_fds=True,
+        )
+        return True
+    for terminal in ("x-terminal-emulator", "gnome-terminal", "konsole"):
+        path = shutil.which(terminal)
+        if not path:
+            continue
+        args = [path, "-e", "sh", "-lc", command]
+        if terminal == "gnome-terminal":
+            args = [path, "--", "sh", "-lc", command]
+        subprocess.Popen(args, env=env, close_fds=True)
+        return True
+    return False
+
 
 def _bootstrap_env(npm_bin: str | None = None) -> dict[str, str]:
     env = build_cli_env("codex")
