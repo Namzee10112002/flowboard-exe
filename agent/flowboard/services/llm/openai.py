@@ -41,6 +41,7 @@ from .base import LLMError
 from . import secrets
 from .cli_utils import (
     build_cli_env,
+    hidden_subprocess_kwargs,
     resolve_cli_binary,
     validate_prompt_size,
     validate_attachment_paths,
@@ -75,6 +76,16 @@ def _compact_cli_error(text: str, *, limit: int = 1800) -> str:
     head_len = 500
     tail_len = max(0, limit - head_len - 40)
     return f"{text[:head_len]}\n...\n{text[-tail_len:]}"
+
+
+def _codex_login_state() -> str:
+    try:
+        from .codex_bootstrap import codex_bootstrap_status
+
+        return str(codex_bootstrap_status().get("codex_login_state") or "unknown")
+    except Exception:  # noqa: BLE001
+        logger.debug("openai: codex login status probe failed", exc_info=True)
+        return "unknown"
 
 
 class OpenAIProvider:
@@ -120,6 +131,7 @@ class OpenAIProvider:
                 capture_output=True,
                 timeout=CLI_PROBE_TIMEOUT,
                 env=build_cli_env(_CLI_BIN),
+                **hidden_subprocess_kwargs(),
             )
             self._cli_available = result.returncode == 0
         except (FileNotFoundError, PermissionError):
@@ -142,6 +154,7 @@ class OpenAIProvider:
                 capture_output=True,
                 timeout=CLI_PROBE_TIMEOUT,
                 env=build_cli_env(_CLI_BIN),
+                **hidden_subprocess_kwargs(),
             )
             stdout_b = result.stdout
         except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
@@ -264,6 +277,11 @@ class OpenAIProvider:
             raise LLMError(f"Invalid input: {exc}") from exc
 
         codex_bin = resolve_cli_binary(_CLI_BIN, CLI_PROBE_TIMEOUT)
+        if _codex_login_state() == "not_logged_in":
+            raise LLMError(
+                "OpenAI Codex is installed but not signed in. Open Settings -> "
+                "AI Providers -> OpenAI Codex -> Open Codex login."
+            )
         # Pipe the prompt via stdin (`-` positional sentinel) instead of as an
         # argv token. Same Windows ``.cmd`` shim rationale as claude_cli.py:
         # cmd.exe re-parses argv for ``.cmd``-shimmed binaries and
@@ -300,6 +318,7 @@ class OpenAIProvider:
                     capture_output=True,
                     timeout=timeout,
                     env=build_cli_env(_CLI_BIN),
+                    **hidden_subprocess_kwargs(),
                 )
             except FileNotFoundError as exc:
                 raise LLMError("codex CLI not found on PATH") from exc

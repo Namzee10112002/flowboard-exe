@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Type
+from typing import Any, Optional, Type
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,19 @@ def build_cli_env(cli_name: str) -> dict[str, str]:
     return env
 
 
+def hidden_subprocess_kwargs() -> dict[str, Any]:
+    """Hide background CLI helper windows when Flowboard runs as a GUI app."""
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def resolve_cli_binary(
     cli_name: str, timeout: float = CLI_PROBE_TIMEOUT
 ) -> str:
@@ -142,6 +155,7 @@ def resolve_cli_binary(
                     capture_output=True,
                     timeout=timeout,
                     env=build_cli_env(cli_name),
+                    **hidden_subprocess_kwargs(),
                 )
                 if result.returncode == 0:
                     logger.info(f"{cli_name}: resolved from Flowboard tools: {tool_path}")
@@ -157,6 +171,7 @@ def resolve_cli_binary(
                     [npm_path, "--version"],
                     capture_output=True,
                     timeout=timeout,
+                    **hidden_subprocess_kwargs(),
                 )
                 if result.returncode == 0:
                     logger.info(f"{cli_name}: resolved from npm: {npm_path}")

@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from flowboard.config import STORAGE_DIR
-from flowboard.services.llm.cli_utils import CLI_PROBE_TIMEOUT, build_cli_env
+from flowboard.services.llm.cli_utils import (
+    CLI_PROBE_TIMEOUT,
+    build_cli_env,
+    hidden_subprocess_kwargs,
+)
 
 NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
 CODEX_PACKAGE = "@openai/codex@latest"
@@ -67,12 +71,16 @@ def _probe_cmd(
             timeout=timeout,
             text=True,
             env=env,
+            **hidden_subprocess_kwargs(),
         )
     except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
-    output = (result.stdout or result.stderr or "").strip()
+    output_raw = result.stdout or result.stderr or ""
+    if isinstance(output_raw, bytes):
+        output_raw = output_raw.decode(errors="replace")
+    output = str(output_raw).strip()
     return result.returncode == 0, output or None
 
 
@@ -169,6 +177,7 @@ def bootstrap_codex_cli() -> dict[str, Any]:
             text=True,
             timeout=240,
             env=env,
+            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise CodexBootstrapError("codex_install_timeout") from exc

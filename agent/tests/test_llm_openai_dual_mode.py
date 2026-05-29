@@ -92,9 +92,18 @@ def _route_probe(version_rc: int = 0, help_image_flag: Optional[str] = "--image"
             return _FakeResult(returncode=version_rc, stdout=b"codex 1.0\n")
         if "--help" in argv:
             return _FakeResult(returncode=0, stdout=help_text)
+        if "login" in argv and "status" in argv:
+            return _FakeResult(returncode=0, stdout=b"Logged in using ChatGPT\n")
         raise AssertionError(f"unexpected dispatch argv: {argv}")
 
     return dispatcher
+
+def _is_probe_or_login_status(argv: list[str]) -> bool:
+    return (
+        "--version" in argv
+        or "--help" in argv
+        or ("login" in argv and "status" in argv)
+    )
 
 
 # ── httpx helpers ─────────────────────────────────────────────────────
@@ -260,7 +269,7 @@ def _route_dispatch(
     probe = _route_probe(help_image_flag=image_flag)
 
     def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
-        if "--version" in argv or "--help" in argv:
+        if _is_probe_or_login_status(argv):
             return probe(argv, kwargs)
         if last_message is not None:
             output_idx = argv.index("--output-last-message")
@@ -290,7 +299,7 @@ async def test_run_text_via_cli_when_codex_available(
     # Pull the dispatch call (skip --version + --help probes).
     dispatch_calls = [
         (argv, kwargs) for argv, kwargs in state["calls"]
-        if "--version" not in argv and "--help" not in argv
+        if not _is_probe_or_login_status(argv)
     ]
     assert len(dispatch_calls) == 1
     argv, kwargs = dispatch_calls[0]
@@ -345,7 +354,7 @@ async def test_run_vision_via_cli_when_image_flag_resolved(
     assert httpx_called["n"] == 0
     dispatch_calls = [
         argv for argv, _kw in state["calls"]
-        if "--version" not in argv and "--help" not in argv
+        if not _is_probe_or_login_status(argv)
     ]
     assert len(dispatch_calls) == 1
     assert "--image" in dispatch_calls[0]
@@ -479,6 +488,24 @@ async def test_cli_reads_last_message_file(
 
 
 @pytest.mark.asyncio
+async def test_cli_not_logged_in_raises_before_exec(tmp_secrets_path, monkeypatch):
+    p = OpenAIProvider()
+    _stub_resolve(monkeypatch)
+
+    def dispatcher(argv: list[str], kwargs: dict) -> _FakeResult:
+        if "--version" in argv:
+            return _FakeResult(returncode=0, stdout=b"codex 1.0\n")
+        if "--help" in argv:
+            return _FakeResult(returncode=0, stdout=b"  --image PATH\n")
+        if "login" in argv and "status" in argv:
+            return _FakeResult(returncode=1, stdout=b"Not logged in\n")
+        raise AssertionError(f"codex exec should not run while logged out: {argv}")
+
+    _stub_run(monkeypatch, dispatcher)
+    with pytest.raises(LLMError, match="not signed in"):
+        await p.run("hi")
+
+@pytest.mark.asyncio
 async def test_cli_nonzero_exit_raises(tmp_secrets_path, monkeypatch):
     p = OpenAIProvider()
     _stub_resolve(monkeypatch)
@@ -488,6 +515,8 @@ async def test_cli_nonzero_exit_raises(tmp_secrets_path, monkeypatch):
             return _FakeResult(returncode=0, stdout=b"codex 1.0\n")
         if "--help" in argv:
             return _FakeResult(returncode=0, stdout=b"  --image PATH\n")
+        if "login" in argv and "status" in argv:
+            return _FakeResult(returncode=0, stdout=b"Logged in using ChatGPT\n")
         return _FakeResult(returncode=1, stderr=b"login required")
 
     _stub_run(monkeypatch, dispatcher)
@@ -506,6 +535,8 @@ async def test_cli_nonzero_exit_keeps_tail_error(tmp_secrets_path, monkeypatch):
             return _FakeResult(returncode=0, stdout=b"codex 1.0\n")
         if "--help" in argv:
             return _FakeResult(returncode=0, stdout=b"  --image PATH\n")
+        if "login" in argv and "status" in argv:
+            return _FakeResult(returncode=0, stdout=b"Logged in using ChatGPT\n")
         return _FakeResult(returncode=1, stderr=header + tail)
 
     _stub_run(monkeypatch, dispatcher)

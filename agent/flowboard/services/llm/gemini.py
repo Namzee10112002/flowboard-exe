@@ -32,6 +32,7 @@ from typing import Optional
 from .base import LLMError
 from .cli_utils import (
     resolve_cli_binary,
+    hidden_subprocess_kwargs,
     get_windows_npm_paths,
     validate_prompt_size,
     validate_attachment_paths,
@@ -125,6 +126,7 @@ class GeminiProvider:
                 [gemini_bin, "--version"],
                 capture_output=True,
                 timeout=_PROBE_TIMEOUT,
+                **hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
                 logger.info("gemini: found at %s", gemini_bin)
@@ -216,6 +218,7 @@ class GeminiProvider:
                 capture_output=True,
                 timeout=timeout,
                 text=False,  # Keep as bytes for .decode() below
+                **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exc:
             raise LLMError("gemini CLI not found on PATH") from exc

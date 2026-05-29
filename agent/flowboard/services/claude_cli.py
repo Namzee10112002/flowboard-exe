@@ -20,6 +20,7 @@ from typing import Optional
 
 from .llm.cli_utils import (
     resolve_cli_binary,
+    hidden_subprocess_kwargs,
     validate_attachment_paths,
     validate_prompt_size,
     DEFAULT_SUBPROCESS_TIMEOUT,
@@ -47,6 +48,7 @@ async def _probe_available() -> bool:
             [claude_bin, "--version"],
             capture_output=True,
             timeout=CLI_PROBE_TIMEOUT,
+            **hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
             logger.info("claude_cli: SUCCESS - found claude at %s", claude_bin)
@@ -159,6 +161,7 @@ async def run_claude(
             capture_output=True,
             timeout=timeout,
             text=False,
+            **hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as exc:
         raise ClaudeCliError("claude CLI not found on PATH") from exc
