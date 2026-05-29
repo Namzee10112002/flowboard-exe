@@ -97,6 +97,8 @@ def get_flowboard_node_paths() -> list[str]:
 def build_cli_env(cli_name: str) -> dict[str, str]:
     """Subprocess environment that can run Flowboard-managed CLI shims."""
     env = os.environ.copy()
+    if cli_name == "codex":
+        env.setdefault("CODEX_HOME", str(get_codex_home()))
     prepended: list[str] = []
     for tool_path in get_flowboard_tool_paths(cli_name):
         parent = Path(tool_path).parent
@@ -115,6 +117,17 @@ def build_cli_env(cli_name: str) -> dict[str, str]:
     if clean:
         env["PATH"] = os.pathsep.join(clean + [env.get("PATH", "")])
     return env
+
+def get_codex_home() -> Path:
+    """Return the Codex config/auth directory used by Flowboard subprocesses."""
+    override = os.environ.get("CODEX_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE")
+        if user_profile:
+            return Path(user_profile).resolve() / ".codex"
+    return Path.home().resolve() / ".codex"
 
 
 def hidden_subprocess_kwargs() -> dict[str, Any]:

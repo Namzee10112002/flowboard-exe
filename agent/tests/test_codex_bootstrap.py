@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from flowboard.services.llm import codex_bootstrap
-from flowboard.services.llm.cli_utils import build_cli_env, get_flowboard_node_paths
+from flowboard.services.llm.cli_utils import (
+    build_cli_env,
+    get_codex_home,
+    get_flowboard_node_paths,
+)
 
 
 class _RunResult:
@@ -31,6 +35,15 @@ def test_build_cli_env_includes_flowboard_portable_node(tmp_path, monkeypatch):
 
     assert str(node_dir.resolve()) in path
     assert str(bin_dir.resolve()) in path
+
+def test_build_cli_env_sets_codex_home(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    env = build_cli_env("codex")
+
+    assert env["CODEX_HOME"] == str(codex_home)
+    assert get_codex_home() == codex_home.resolve()
 
 
 def test_bootstrap_uses_portable_node_path_when_probing_local_codex(tmp_path, monkeypatch):
@@ -98,6 +111,29 @@ def test_status_reports_codex_not_logged_in(tmp_path, monkeypatch):
 
     assert status["codex_present"] is True
     assert status["codex_login_state"] == "not_logged_in"
+
+def test_reset_codex_login_moves_auth_files(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    auth = codex_home / "auth.json"
+    creds = codex_home / "credentials.json"
+    auth.write_text("auth", encoding="utf-8")
+    creds.write_text("creds", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        codex_bootstrap,
+        "codex_bootstrap_status",
+        lambda: {"codex_login_state": "not_logged_in"},
+    )
+
+    result = codex_bootstrap.reset_codex_login()
+
+    assert result["ok"] is True
+    assert not auth.exists()
+    assert not creds.exists()
+    assert len(result["moved"]) == 2
+    for moved in result["moved"]:
+        assert Path(moved).exists()
 
 def test_windows_login_launcher_uses_new_console_without_start_title(tmp_path, monkeypatch):
     if os.name != "nt":

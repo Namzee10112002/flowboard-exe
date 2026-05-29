@@ -30,6 +30,7 @@ from flowboard.services.llm.codex_bootstrap import (
     bootstrap_codex_cli,
     codex_bootstrap_status,
     launch_codex_login,
+    reset_and_launch_codex_login,
 )
 from flowboard.services import claude_cli
 
@@ -148,6 +149,17 @@ def open_codex_login() -> dict:
         return launch_codex_login()
     except CodexBootstrapError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@router.post("/providers/openai/codex-login-reset")
+def reset_open_codex_login() -> dict:
+    try:
+        result = reset_and_launch_codex_login()
+    except CodexBootstrapError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    provider = registry.get_provider("openai")
+    if provider is not None and hasattr(provider, "reset_cache"):
+        provider.reset_cache()
+    return result
 
 
 # ── PUT /api/llm/providers/{name} ─────────────────────────────────────

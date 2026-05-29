@@ -1177,6 +1177,16 @@ export async function launchCodexLogin(): Promise<CodexLoginLaunchResult> {
   return res.json() as Promise<CodexLoginLaunchResult>;
 }
 
+export async function resetAndLaunchCodexLogin(): Promise<unknown> {
+  const res = await fetch("/api/llm/providers/openai/codex-login-reset", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json();
+}
+
 export interface FlowAccountDTO {
   id: number;
   label: string;

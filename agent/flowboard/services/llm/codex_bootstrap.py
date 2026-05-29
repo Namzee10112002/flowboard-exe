@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import urllib.request
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from flowboard.config import STORAGE_DIR
 from flowboard.services.llm.cli_utils import (
     CLI_PROBE_TIMEOUT,
     build_cli_env,
+    get_codex_home,
     hidden_subprocess_kwargs,
 )
 
@@ -225,6 +227,35 @@ def launch_codex_login() -> dict[str, Any]:
     if not _launch_posix_codex_login(codex_bin, env):
         raise CodexBootstrapError("codex_login_terminal_unavailable")
     return {"ok": True, "launched": True, "mode": "terminal", "status": status}
+
+def reset_codex_login() -> dict[str, Any]:
+    """Move Codex auth files aside so the next login starts from a clean state."""
+    codex_home = get_codex_home()
+    codex_home.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    moved: list[str] = []
+    for name in ("auth.json", "credentials.json"):
+        path = codex_home / name
+        if not path.exists():
+            continue
+        backup = codex_home / f"{name}.flowboard-backup-{stamp}"
+        path.replace(backup)
+        moved.append(str(backup))
+    return {
+        "ok": True,
+        "codex_home": str(codex_home),
+        "moved": moved,
+        "status": codex_bootstrap_status(),
+    }
+
+def reset_and_launch_codex_login() -> dict[str, Any]:
+    reset = reset_codex_login()
+    launch = launch_codex_login()
+    return {
+        "ok": True,
+        "reset": reset,
+        "launch": launch,
+    }
 
 
 def _launch_windows_codex_login(codex_bin: Path, env: dict[str, str]) -> None:

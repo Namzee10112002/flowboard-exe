@@ -4,6 +4,7 @@ import {
   getLlmConfig,
   getLlmProviders,
   launchCodexLogin,
+  resetAndLaunchCodexLogin,
   setLlmConfig,
   testLlmProvider,
   type LLMConfig,
@@ -112,6 +113,7 @@ export function AiProvidersSection() {
   const [toast, setToast] = useState<string | null>(null);
   const [codexInstalling, setCodexInstalling] = useState(false);
   const [codexLoginOpening, setCodexLoginOpening] = useState(false);
+  const [codexLoginResetting, setCodexLoginResetting] = useState(false);
 
   const aliveRef = useRef(true);
   useEffect(() => {
@@ -259,6 +261,23 @@ export function AiProvidersSection() {
     }
   }
 
+  async function handleResetCodexLogin() {
+    if (codexLoginResetting) return;
+    setCodexLoginResetting(true);
+    try {
+      await resetAndLaunchCodexLogin();
+      showToast("Codex login was reset. Finish sign-in in the opened window, then test again.");
+      setTest(INITIAL_TEST);
+      await refresh();
+    } catch (err) {
+      showToast(
+        `Codex login reset failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      if (aliveRef.current) setCodexLoginResetting(false);
+    }
+  }
+
   // ── Render guards ───────────────────────────────────────────────
 
   if (!providers && !config && !loadError) {
@@ -390,6 +409,17 @@ export function AiProvidersSection() {
                   {codexLoginOpening ? "Opening Codex login..." : "Open Codex login"}
                 </button>
               )}
+              {pending === "openai" && pendingProvider.lastError !== "not_installed" && (
+                <button
+                  type="button"
+                  className="selection-panel__setup-btn"
+                  onClick={handleResetCodexLogin}
+                  disabled={codexLoginResetting}
+                  title="Backs up the current Codex auth file, then opens a fresh login."
+                >
+                  {codexLoginResetting ? "Resetting login..." : "Reset Codex login"}
+                </button>
+              )}
             </div>
           ) : (
             // Ready branch: provider is connected. Show ONE connection
@@ -403,6 +433,12 @@ export function AiProvidersSection() {
               <div className="selection-panel__heading">
                 Test the connection, then Apply
               </div>
+              {pending === "openai" && pendingProvider.lastError === "session_expired" && (
+                <div className="selection-panel__setup-text">
+                  Codex login status still exists, but the session token failed during a real run.
+                  Use Reset Codex login, finish sign-in, then test again.
+                </div>
+              )}
               <ConnectionTestRow
                 providerLabel={labelOf(pending)}
                 result={test}
@@ -417,6 +453,17 @@ export function AiProvidersSection() {
                     disabled={codexLoginOpening}
                   >
                     {codexLoginOpening ? "Opening Codex login..." : "Open Codex login"}
+                  </button>
+                )}
+                {pending === "openai" && (
+                  <button
+                    type="button"
+                    className="selection-panel__setup-btn"
+                    onClick={handleResetCodexLogin}
+                    disabled={codexLoginResetting}
+                    title="Use this when Codex says connected but the test still reports an expired session."
+                  >
+                    {codexLoginResetting ? "Resetting login..." : "Reset Codex login"}
                   </button>
                 )}
                 <button
