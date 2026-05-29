@@ -30,6 +30,7 @@ _WINDOWS_NPM_PATHS = [
     ("USERPROFILE", "AppData", "Roaming", "npm"),
     ("HOME", "AppData", "Roaming", "npm"),
 ]
+_CODEX_IGNORED_OPENAI_ENV_PREFIX = "OPENAI_"
 
 
 def get_windows_npm_paths(cli_name: str) -> list[str]:
@@ -99,6 +100,7 @@ def build_cli_env(cli_name: str) -> dict[str, str]:
     env = os.environ.copy()
     if cli_name == "codex":
         env.setdefault("CODEX_HOME", str(get_codex_home()))
+        _strip_codex_openai_env(env)
     prepended: list[str] = []
     for tool_path in get_flowboard_tool_paths(cli_name):
         parent = Path(tool_path).parent
@@ -117,6 +119,20 @@ def build_cli_env(cli_name: str) -> dict[str, str]:
     if clean:
         env["PATH"] = os.pathsep.join(clean + [env.get("PATH", "")])
     return env
+
+def codex_ignored_openai_env_names() -> list[str]:
+    """OpenAI env vars Flowboard excludes from Codex OAuth subprocesses."""
+    return sorted(
+        name
+        for name in os.environ
+        if name.upper().startswith(_CODEX_IGNORED_OPENAI_ENV_PREFIX)
+    )
+
+def _strip_codex_openai_env(env: dict[str, str]) -> None:
+    """Keep ambient OpenAI API config from overriding Codex ChatGPT OAuth."""
+    for name in list(env):
+        if name.upper().startswith(_CODEX_IGNORED_OPENAI_ENV_PREFIX):
+            env.pop(name, None)
 
 def get_codex_home() -> Path:
     """Return the Codex config/auth directory used by Flowboard subprocesses."""
