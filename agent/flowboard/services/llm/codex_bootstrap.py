@@ -239,12 +239,13 @@ def _launch_windows_codex_login(codex_bin: Path, env: dict[str, str]) -> None:
         ),
         encoding="utf-8",
     )
-    command = f'start "Flowboard Codex Login" "{script}"'
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     subprocess.Popen(
-        ["cmd.exe", "/d", "/c", command],
+        ["cmd.exe", "/d", "/c", str(script)],
         cwd=str(codex_install_root()),
         env=env,
         close_fds=True,
+        creationflags=creationflags,
     )
 
 

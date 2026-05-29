@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from flowboard.services.llm import codex_bootstrap
 from flowboard.services.llm.cli_utils import build_cli_env, get_flowboard_node_paths
 
@@ -96,3 +98,29 @@ def test_status_reports_codex_not_logged_in(tmp_path, monkeypatch):
 
     assert status["codex_present"] is True
     assert status["codex_login_state"] == "not_logged_in"
+
+def test_windows_login_launcher_uses_new_console_without_start_title(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("Windows launcher behavior")
+    tools = tmp_path / "tools"
+    codex = tools / "codex" / "node_modules" / ".bin" / "codex.cmd"
+    codex.parent.mkdir(parents=True, exist_ok=True)
+    codex.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FLOWBOARD_TOOLS_DIR", str(tools))
+    seen: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+
+        class Proc:
+            pass
+
+        return Proc()
+
+    monkeypatch.setattr(codex_bootstrap.subprocess, "Popen", fake_popen)
+
+    codex_bootstrap._launch_windows_codex_login(codex, {"PATH": "C:/node"})
+
+    assert seen["args"] == ["cmd.exe", "/d", "/c", str(tools / "codex-login.cmd")]
+    assert "creationflags" in seen["kwargs"]
